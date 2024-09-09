@@ -1,5 +1,7 @@
+__pycache__
 venv
 lyrics
 error.txt
 songs_list.txt
 *.drawio
+*.log
