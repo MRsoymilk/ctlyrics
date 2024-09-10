@@ -48,16 +48,20 @@ def main(stdscr):
     lyrics_cache = LyricsCache()
 
     while True:
-        input_key = stdscr.getch()
-        status = player.handle_input(input_key)
-        if status == 1:
-            break
         info = get_cmus_info()
         lyrics = lyrics_cache.load_lyrics(info['title'], info['artist'])
-        player.get_termianl_size()
-        player.display_song_info(info['title'], info['artist'], info['status'])
-        player.display_progress_bar(info['position'], info['duration'])
-        player.display_lyrics(lyrics, info['position'])
+
+        try:
+            player.get_termianl_size()
+            input_key = stdscr.getch()
+            status = player.handle_input(input_key)
+            if status == 1:
+                break
+            player.display_song_info(info['title'], info['artist'], info['status'])
+            player.display_progress_bar(info['position'], info['duration'])
+            player.display_lyrics(lyrics, info['position'])
+        except curses.error:
+            continue
         stdscr.refresh()
 
 curses.wrapper(main)

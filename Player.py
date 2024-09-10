@@ -50,7 +50,6 @@ class Player:
                 self.log.info(f"cmd: {self.cmd}")
                 self.msg = 'exec: ' + self.cmd
             self.cmd = ''
-
         self.stdscr.move(self.height - 1, 0)
         self.stdscr.clrtoeol()
         if self.command_mode:
@@ -60,7 +59,11 @@ class Player:
         return 0
 
     def get_termianl_size(self):
-        self.height, self.width = self.stdscr.getmaxyx()
+        if curses.is_term_resized(self.height, self.width):
+            self.height, self.width = self.stdscr.getmaxyx()
+            curses.resizeterm(self.height, self.width)
+            self.stdscr.clear()
+            self.stdscr.refresh()
 
     def format_time(self, seconds):
         minutes = seconds // 60
