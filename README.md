@@ -30,7 +30,7 @@ python ctlyrics.py
 - `←`: 歌词显示减慢 0.1s
 - `→`: 歌词显示加快 0.1s
 
-如果需要使用 ctlyrics 提供的歌词下载 ~~（通过[无损音乐网](https://www.sq0527.cn/)下载）~~ (网站已经无效了)，则需要安装相关依赖
+如果需要使用 ctlyrics 提供的歌词下载 ~~（通过[无损音乐网](https://www.sq0527.cn/)下载）~~ (~~网站已经无效了~~好像恢复了，后续不再关注)，则需要安装相关依赖
 
 ```bash
 pip install -r requirements.txt
