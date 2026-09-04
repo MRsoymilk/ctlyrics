@@ -1,9 +1,11 @@
+use std::fs;
 use tracing::info;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 pub fn init_logger(log_file: &str) {
-    let file_appender = RollingFileAppender::new(Rotation::DAILY, ".", log_file);
+    fs::create_dir_all("log").ok();
+    let file_appender = RollingFileAppender::new(Rotation::DAILY, "log", log_file);
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
     let file_layer = fmt::layer()

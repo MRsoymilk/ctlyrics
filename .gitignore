@@ -2,6 +2,8 @@ lyrics
 error.txt
 songs_list.txt
 *.log
+log/
+config/
 
 # Added by cargo
 /target

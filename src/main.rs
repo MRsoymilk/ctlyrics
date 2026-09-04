@@ -45,6 +45,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 use ratatui::Terminal;
+use std::fs;
 use std::io;
 use std::time::Duration;
 
@@ -56,6 +57,9 @@ use crate::player::Player;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    fs::create_dir_all("log")?;
+    fs::create_dir_all("config")?;
+
     let matches = Command::new("ctlyrics")
         .version("0.1.0")
         .about("Terminal lyrics viewer for cmus")

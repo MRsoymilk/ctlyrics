@@ -90,7 +90,7 @@ pub fn generate_id() -> String {
 }
 
 pub fn get_mapping_path() -> PathBuf {
-    PathBuf::from("mappings.json")
+    PathBuf::from("config/mappings.json")
 }
 
 #[derive(Debug, Clone, Serialize)]
