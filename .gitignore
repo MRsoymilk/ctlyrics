@@ -1,6 +1,7 @@
-__pycache__
-venv
 lyrics
 error.txt
 songs_list.txt
 *.log
+
+# Added by cargo
+/target
