@@ -136,17 +136,17 @@ async fn index(
 async fn update_settings(
     State(store): State<SharedStore>,
     Form(form): Form<SettingsForm>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<Response, AppError> {
     let mut store_guard = store.lock().unwrap();
     let path = std::path::Path::new(&form.music_dir);
     if !path.exists() || !path.is_dir() {
         let msg = r#"<div class="message error">目录不存在</div>"#;
-        return Ok(Html(msg));
+        return Ok((StatusCode::BAD_REQUEST, Html(msg)).into_response());
     }
     store_guard.set_music_dir(form.music_dir.clone());
     store_guard.save(&get_mapping_path())?;
     let msg = r#"<div class="message success">保存成功</div>"#;
-    Ok(Html(msg))
+    Ok(Html(msg).into_response())
 }
 
 async fn create_mapping(

@@ -436,13 +436,12 @@ dependencies = [
  "axum",
  "clap",
  "crossterm",
+ "ctlyrics-utils",
  "dirs",
  "mime_guess",
  "open",
  "ratatui",
  "regex",
- "reqwest",
- "scraper",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -451,7 +450,27 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ctlyrics-tools"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "ctlyrics-utils",
+ "regex",
+ "reqwest",
+ "scraper",
+ "thiserror 1.0.69",
  "urlencoding",
+]
+
+[[package]]
+name = "ctlyrics-utils"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 1.0.69",
  "walkdir",
 ]
 
