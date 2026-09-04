@@ -1,4 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent};
+use open;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use tokio;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -8,6 +12,8 @@ use ratatui::{
 };
 
 use crate::lyrics_cache::LyricLine;
+
+static WEB_SERVER_STARTED: AtomicBool = AtomicBool::new(false);
 
 pub struct Player {
     pub offset: f64,
@@ -68,10 +74,34 @@ impl Player {
         let cmd = self.command_buffer.trim();
         if cmd == "love" {
             self.message = "to my beloved Can'.".to_string();
+        } else if cmd == "web" {
+            if !WEB_SERVER_STARTED.load(Ordering::SeqCst) {
+                self.start_web_server();
+            }
+            if let Err(e) = open::that("http://localhost:3000") {
+                self.message = format!("Failed to open browser: {}", e);
+            } else {
+                self.message = "Opened http://localhost:3000".to_string();
+            }
         } else if !cmd.is_empty() {
             self.message = format!("exec: {}", cmd);
         }
         self.command_buffer.clear();
+    }
+
+    fn start_web_server(&mut self) {
+        self.message = "Starting web server...".to_string();
+        thread::spawn(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let app = crate::web::create_router();
+                let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+                println!("Web server running at http://localhost:3000");
+                axum::serve(listener, app).await.unwrap();
+            });
+        });
+        WEB_SERVER_STARTED.store(true, Ordering::SeqCst);
+        self.message = "Web server started on http://localhost:3000".to_string();
     }
 
     pub fn draw(&mut self, frame: &mut Frame, info: &CmusInfo, lyrics: &[LyricLine]) {

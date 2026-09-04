@@ -42,7 +42,7 @@ use clap::{Arg, Command};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, enable_raw_mode},
 };
 use ratatui::Terminal;
 use std::io;
@@ -93,7 +93,7 @@ fn run_tui() -> Result<()> {
     
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnableMouseCapture)?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -120,7 +120,6 @@ fn run_tui() -> Result<()> {
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
-        LeaveAlternateScreen,
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;

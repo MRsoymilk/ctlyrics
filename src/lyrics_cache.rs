@@ -2,7 +2,7 @@ use regex::Regex;
 use std::fs;
 use std::path::Path;
 
-use crate::mapping::{MappingStore, SongMapping};
+use crate::mapping::MappingStore;
 
 #[derive(Debug, Clone)]
 pub struct LyricLine {
