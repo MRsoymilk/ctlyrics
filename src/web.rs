@@ -1,13 +1,14 @@
 use crate::mapping::{MappingError, MappingStore, SongFile, SongMapping, generate_id, get_mapping_path, list_lrc_files, read_lrc_content, scan_music_dir};
 use askama::Template;
 use axum::{
-    extract::{Form, Path, Query, State},
+    extract::{DefaultBodyLimit, Form, Multipart, Path, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
-    Router,
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::sync::{Arc, Mutex};
 use tower_http::services::ServeDir;
 
@@ -56,6 +57,11 @@ struct UnmapForm {
     song_path: String,
 }
 
+#[derive(Serialize)]
+struct UploadResponse {
+    files: Vec<String>,
+}
+
 type SharedStore = Arc<Mutex<MappingStore>>;
 
 pub fn create_router() -> Router {
@@ -68,8 +74,10 @@ pub fn create_router() -> Router {
         .route("/settings", post(update_settings))
         .route("/map", post(create_mapping))
         .route("/unmap", post(remove_mapping))
+        .route("/api/lrc/upload", post(upload_lrc))
         .route("/api/lrc/:filename", get(get_lrc_content))
         .nest_service("/static", ServeDir::new("static"))
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(store)
 }
 
@@ -179,6 +187,51 @@ async fn remove_mapping(
     Ok(Redirect::to("/"))
 }
 
+async fn upload_lrc(mut multipart: Multipart) -> Result<Response, AppError> {
+    let mut uploaded = Vec::new();
+    fs::create_dir_all("lyrics").map_err(MappingError::from)?;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(e.to_string()))?
+    {
+        let Some(filename) = field.file_name() else {
+            continue;
+        };
+        let filename = std::path::Path::new(filename)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| AppError::BadRequest("无效的文件名".to_string()))?
+            .to_string();
+
+        let is_lrc = std::path::Path::new(&filename)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("lrc"));
+        if !is_lrc {
+            return Err(AppError::BadRequest(format!(
+                "仅支持 .lrc 文件：{}",
+                filename
+            )));
+        }
+
+        let content = field
+            .bytes()
+            .await
+            .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        fs::write(std::path::Path::new("lyrics").join(&filename), content)
+            .map_err(MappingError::from)?;
+        uploaded.push(filename);
+    }
+
+    if uploaded.is_empty() {
+        return Err(AppError::BadRequest("没有收到歌词文件".to_string()));
+    }
+
+    Ok(Json(UploadResponse { files: uploaded }).into_response())
+}
+
 async fn get_lrc_content(
     State(_store): State<SharedStore>,
     Path(filename): Path<String>,
@@ -193,6 +246,8 @@ enum AppError {
     NotFound,
     #[error("Mapping error: {0}")]
     Mapping(#[from] MappingError),
+    #[error("Bad request: {0}")]
+    BadRequest(String),
 }
 
 impl IntoResponse for AppError {
@@ -200,6 +255,7 @@ impl IntoResponse for AppError {
         let (status, msg) = match self {
             AppError::NotFound => (StatusCode::NOT_FOUND, "Not found".to_string()),
             AppError::Mapping(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+            AppError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
         };
         (status, msg).into_response()
     }

@@ -51,9 +51,30 @@
         .message { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
         .message.success { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
         .message.error { background: #ffebee; color: #c62828; border: 1px solid #ffcdd2; }
+        .loading-progress { position: fixed; top: 0; left: 0; width: 100%; height: 4px; z-index: 2000; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+        .loading-progress.show { opacity: 1; }
+        .loading-progress-bar { width: 0; height: 100%; background: #4CAF50; box-shadow: 0 0 8px rgba(76, 175, 80, 0.65); transition: width 0.2s ease-out; }
+        .lrc-drop-zone { margin-top: 10px; padding: 18px; border: 2px dashed #b7c7b8; border-radius: 8px; background: #f8fbf8; color: #527054; text-align: center; cursor: pointer; transition: border-color 0.2s, background 0.2s, transform 0.2s; }
+        .lrc-drop-zone:hover, .lrc-drop-zone.dragging { border-color: #4CAF50; background: #edf8ee; transform: translateY(-1px); }
+        .lrc-drop-zone strong { display: block; margin-bottom: 2px; color: #2e6131; }
+        .lrc-drop-zone span { font-size: 12px; }
+        .drop-overlay { position: fixed; inset: 0; z-index: 1900; display: flex; align-items: center; justify-content: center; background: rgba(238, 248, 239, 0.94); opacity: 0; pointer-events: none; transition: opacity 0.15s; }
+        .drop-overlay.show { opacity: 1; }
+        .drop-overlay-content { width: min(520px, 86vw); padding: 50px 24px; border: 3px dashed #4CAF50; border-radius: 18px; color: #28612c; text-align: center; font-size: 20px; font-weight: 600; }
+        .upload-message { position: fixed; top: 20px; left: 50%; z-index: 2100; max-width: min(520px, 90vw); padding: 10px 16px; border-radius: 8px; background: #2e7d32; color: white; box-shadow: 0 5px 18px rgba(0,0,0,0.18); opacity: 0; pointer-events: none; transform: translate(-50%, -12px); transition: opacity 0.2s, transform 0.2s; }
+        .upload-message.show { opacity: 1; transform: translate(-50%, 0); }
+        .upload-message.error { background: #c62828; }
     </style>
 </head>
 <body>
+    <div class="loading-progress" id="loadingProgress" role="progressbar" aria-label="正在加载" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="loading-progress-bar" id="loadingProgressBar"></div>
+    </div>
+    <div class="drop-overlay" id="dropOverlay">
+        <div class="drop-overlay-content">松开鼠标，上传歌词文件</div>
+    </div>
+    <div class="upload-message" id="uploadMessage" role="status"></div>
+
     {% if has_music_dir %}
     <div class="music-dir-info">
         <span>ctlyrics</span>
@@ -160,7 +181,11 @@
                         <option value="{{ lrc }}">{{ lrc }}</option>
                         {% endfor %}
                     </select>
-                    <small>请先将 .lrc 文件放入 lyrics/ 目录</small>
+                    <div class="lrc-drop-zone" id="lrcDropZone" tabindex="0" role="button">
+                        <strong>拖入 .lrc 文件</strong>
+                        <span>或点击选择，可一次上传多个文件</span>
+                        <input type="file" id="lrcFileInput" accept=".lrc" multiple hidden>
+                    </div>
                 </div>
                 <div class="modal-actions">
                     <button type="button" class="btn btn-ghost" onclick="closeMapModal()">取消</button>
@@ -190,6 +215,90 @@
     </div>
 
     <script>
+        let loadingProgressTimer;
+        let uploadMessageTimer;
+        let documentDragDepth = 0;
+
+        function startLoadingProgress() {
+            const progress = document.getElementById('loadingProgress');
+            const bar = document.getElementById('loadingProgressBar');
+            let value = 0;
+
+            clearInterval(loadingProgressTimer);
+            progress.classList.add('show');
+            progress.setAttribute('aria-valuenow', value);
+            bar.style.width = '0%';
+
+            loadingProgressTimer = setInterval(() => {
+                value = Math.min(90, value + Math.max(1, Math.round((90 - value) * 0.12)));
+                progress.setAttribute('aria-valuenow', value);
+                bar.style.width = value + '%';
+            }, 180);
+        }
+
+        function finishLoadingProgress() {
+            const progress = document.getElementById('loadingProgress');
+            const bar = document.getElementById('loadingProgressBar');
+
+            clearInterval(loadingProgressTimer);
+            progress.setAttribute('aria-valuenow', 100);
+            bar.style.width = '100%';
+
+            return new Promise(resolve => {
+                setTimeout(() => {
+                    progress.classList.remove('show');
+                    bar.style.width = '0%';
+                    progress.setAttribute('aria-valuenow', 0);
+                    resolve();
+                }, 250);
+            });
+        }
+
+        function showUploadMessage(text, isError = false) {
+            const message = document.getElementById('uploadMessage');
+            clearTimeout(uploadMessageTimer);
+            message.textContent = text;
+            message.classList.toggle('error', isError);
+            message.classList.add('show');
+            uploadMessageTimer = setTimeout(() => message.classList.remove('show'), 3000);
+        }
+
+        async function uploadLyrics(files) {
+            const lyrics = Array.from(files).filter(file => file.name.toLowerCase().endsWith('.lrc'));
+            if (lyrics.length !== files.length || lyrics.length === 0) {
+                showUploadMessage('只能上传 .lrc 歌词文件', true);
+                return;
+            }
+
+            const formData = new FormData();
+            lyrics.forEach(file => formData.append('files', file));
+            startLoadingProgress();
+
+            try {
+                const response = await fetch('/api/lrc/upload', {
+                    method: 'POST',
+                    body: formData,
+                });
+                if (!response.ok) {
+                    throw new Error(await response.text());
+                }
+
+                const result = await response.json();
+                const select = document.getElementById('modalLrcSelect');
+                result.files.forEach(filename => {
+                    if (!Array.from(select.options).some(option => option.value === filename)) {
+                        select.add(new Option(filename, filename));
+                    }
+                });
+                select.value = result.files[0];
+                showUploadMessage(`已上传 ${result.files.length} 个歌词文件`);
+            } catch (error) {
+                showUploadMessage(error.message || '歌词上传失败', true);
+            } finally {
+                await finishLoadingProgress();
+            }
+        }
+
         function openMapModal(songPath, title, artist, currentLrc) {
             document.getElementById('modalSongPath').value = songPath;
             document.getElementById('modalTitleInput').value = title;
@@ -203,6 +312,55 @@
         }
         document.getElementById('mapModal').addEventListener('click', function(e) {
             if (e.target === this) closeMapModal();
+        });
+
+        const lrcDropZone = document.getElementById('lrcDropZone');
+        const lrcFileInput = document.getElementById('lrcFileInput');
+        lrcDropZone.addEventListener('click', () => lrcFileInput.click());
+        lrcDropZone.addEventListener('keydown', event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                lrcFileInput.click();
+            }
+        });
+        lrcFileInput.addEventListener('change', event => {
+            uploadLyrics(event.target.files);
+            event.target.value = '';
+        });
+        lrcDropZone.addEventListener('dragover', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            lrcDropZone.classList.add('dragging');
+        });
+        lrcDropZone.addEventListener('dragleave', () => lrcDropZone.classList.remove('dragging'));
+        lrcDropZone.addEventListener('drop', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            lrcDropZone.classList.remove('dragging');
+            document.getElementById('dropOverlay').classList.remove('show');
+            documentDragDepth = 0;
+            uploadLyrics(event.dataTransfer.files);
+        });
+
+        document.addEventListener('dragenter', event => {
+            if (event.dataTransfer.types.includes('Files')) {
+                event.preventDefault();
+                documentDragDepth += 1;
+                document.getElementById('dropOverlay').classList.add('show');
+            }
+        });
+        document.addEventListener('dragover', event => event.preventDefault());
+        document.addEventListener('dragleave', () => {
+            documentDragDepth = Math.max(0, documentDragDepth - 1);
+            if (documentDragDepth === 0) {
+                document.getElementById('dropOverlay').classList.remove('show');
+            }
+        });
+        document.addEventListener('drop', event => {
+            event.preventDefault();
+            documentDragDepth = 0;
+            document.getElementById('dropOverlay').classList.remove('show');
+            uploadLyrics(event.dataTransfer.files);
         });
 
         function openSettingsModal() {
@@ -219,21 +377,32 @@
         document.getElementById('settingsForm').addEventListener('submit', async function(e) {
             e.preventDefault();
             const formData = new FormData(this);
-            const response = await fetch('/settings', {
-                method: 'POST',
-                body: formData,
-            });
-            const html = await response.text();
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(html, 'text/html');
-            const messageDiv = doc.getElementById('settingsMessage');
-            if (messageDiv) {
-                document.getElementById('settingsMessage').innerHTML = messageDiv.innerHTML;
-            }
-            // Update music dir display if success
-            if (response.ok && formData.get('music_dir')) {
-                document.getElementById('settingsMusicDir').value = formData.get('music_dir');
-                location.reload();
+            const message = document.getElementById('settingsMessage');
+
+            startLoadingProgress();
+            try {
+                const response = await fetch('/settings', {
+                    method: 'POST',
+                    body: new URLSearchParams(formData),
+                });
+                message.innerHTML = await response.text();
+
+                if (response.ok) {
+                    const pageResponse = await fetch('/');
+                    if (!pageResponse.ok) {
+                        throw new Error('Failed to reload page');
+                    }
+                    const pageHtml = await pageResponse.text();
+                    await finishLoadingProgress();
+                    document.open();
+                    document.write(pageHtml);
+                    document.close();
+                } else {
+                    await finishLoadingProgress();
+                }
+            } catch (error) {
+                await finishLoadingProgress();
+                message.innerHTML = '<div class="message error">保存失败，请检查服务器状态</div>';
             }
         });
     </script>
