@@ -215,9 +215,9 @@
     </div>
 
     <script>
-        let loadingProgressTimer;
-        let uploadMessageTimer;
-        let documentDragDepth = 0;
+        var loadingProgressTimer;
+        var uploadMessageTimer;
+        var documentDragDepth = 0;
 
         function startLoadingProgress() {
             const progress = document.getElementById('loadingProgress');
@@ -314,8 +314,8 @@
             if (e.target === this) closeMapModal();
         });
 
-        const lrcDropZone = document.getElementById('lrcDropZone');
-        const lrcFileInput = document.getElementById('lrcFileInput');
+        var lrcDropZone = document.getElementById('lrcDropZone');
+        var lrcFileInput = document.getElementById('lrcFileInput');
         lrcDropZone.addEventListener('click', () => lrcFileInput.click());
         lrcDropZone.addEventListener('keydown', event => {
             if (event.key === 'Enter' || event.key === ' ') {

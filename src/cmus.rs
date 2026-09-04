@@ -1,4 +1,5 @@
 use regex::Regex;
+use std::path::Path;
 use std::process::Command;
 use thiserror::Error;
 
@@ -39,7 +40,6 @@ fn parse_cmus_output(output: &str) -> Result<CmusInfo, CmusError> {
     let duration_re = Regex::new(r"duration (\d+)").unwrap();
     let status_re = Regex::new(r"status (\w+)").unwrap();
     let file_re = Regex::new(r"file (.+)").unwrap();
-    let title_artist_re = Regex::new(r"/([^/]+?)(?:\s*-\s*([^/.]+))?\.").unwrap();
 
     let position = position_re
         .captures(output)
@@ -65,21 +65,44 @@ fn parse_cmus_output(output: &str) -> Result<CmusInfo, CmusError> {
         .map(|m| m.as_str().to_string())
         .unwrap_or_default();
 
-    let (title, artist) = title_artist_re
-        .captures(&file)
-        .and_then(|c| {
-            let title = c.get(1).map(|m| m.as_str().trim().to_string())?;
-            let artist = c.get(2).map(|m| m.as_str().trim().to_string());
-            Some((title, artist))
-        })
-        .unwrap_or_else(|| ("unknown".to_string(), None));
+    let tag_title = output
+        .lines()
+        .find_map(|line| line.strip_prefix("tag title "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let tag_artist = output
+        .lines()
+        .find_map(|line| line.strip_prefix("tag artist "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let filename = Path::new(&file)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    let (filename_title, filename_artist) = filename
+        .rsplit_once('-')
+        .map(|(title, artist)| (title.trim(), Some(artist.trim())))
+        .unwrap_or((filename.trim(), None));
+    let title = tag_title.unwrap_or_else(|| {
+        if filename_title.is_empty() {
+            "unknown".to_string()
+        } else {
+            filename_title.to_string()
+        }
+    });
+    let artist = tag_artist
+        .or_else(|| filename_artist.map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string());
 
     Ok(CmusInfo {
         position,
         duration,
         status,
         title,
-        artist: artist.unwrap_or_else(|| "unknown".to_string()),
+        artist,
         file,
     })
 }

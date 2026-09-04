@@ -92,12 +92,23 @@ impl Player {
     fn start_web_server(&mut self) {
         self.message = "Starting web server...".to_string();
         thread::spawn(|| {
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let Ok(rt) = tokio::runtime::Runtime::new() else {
+                tracing::error!("failed to create web server runtime");
+                return;
+            };
             rt.block_on(async {
                 let app = crate::web::create_router();
-                let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-                println!("Web server running at http://localhost:3000");
-                axum::serve(listener, app).await.unwrap();
+                let listener = match tokio::net::TcpListener::bind("0.0.0.0:3000").await {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        tracing::error!(%error, "failed to bind web server");
+                        return;
+                    }
+                };
+                tracing::info!("web server running at http://localhost:3000");
+                if let Err(error) = axum::serve(listener, app).await {
+                    tracing::error!(%error, "web server stopped");
+                }
             });
         });
         WEB_SERVER_STARTED.store(true, Ordering::SeqCst);

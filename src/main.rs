@@ -28,9 +28,10 @@ mod tests {
 use anyhow::Result;
 use clap::{Arg, Command};
 use crossterm::{
+    cursor::MoveTo,
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode},
+    terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::Terminal;
 use std::fs;
@@ -80,9 +81,15 @@ fn run_tui() -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        Clear(ClearType::All),
+        MoveTo(0, 0),
+        EnableMouseCapture
+    )?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
 
     let mut player = Player::new();
     let mut lyrics_cache = LyricsCache::new().with_mapping(mapping_store);
@@ -94,12 +101,17 @@ fn run_tui() -> Result<()> {
         terminal.draw(|frame| player.draw(frame, &info, &lyrics))?;
 
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if player.handle_input(key) {
                         break;
                     }
                 }
+                Event::Resize(_, _) => {
+                    terminal.autoresize()?;
+                    terminal.clear()?;
+                }
+                _ => {}
             }
         }
     }

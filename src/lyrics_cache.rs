@@ -1,8 +1,9 @@
 use regex::Regex;
 use std::fs;
 use std::path::Path;
+use std::time::SystemTime;
 
-use crate::mapping::MappingStore;
+use crate::mapping::{MappingStore, get_mapping_path};
 
 #[derive(Debug, Clone)]
 pub struct LyricLine {
@@ -16,6 +17,7 @@ pub struct LyricsCache {
     last_music_path: Option<String>,
     last_lyrics: Vec<LyricLine>,
     mapping_store: Option<MappingStore>,
+    mapping_modified: Option<SystemTime>,
 }
 
 impl LyricsCache {
@@ -26,15 +28,24 @@ impl LyricsCache {
             last_music_path: None,
             last_lyrics: Vec::new(),
             mapping_store: None,
+            mapping_modified: None,
         }
     }
 
     pub fn with_mapping(mut self, store: MappingStore) -> Self {
         self.mapping_store = Some(store);
+        self.mapping_modified = mapping_modified_time();
         self
     }
 
-    pub fn load_lyrics(&mut self, title: &str, artist: Option<&str>, music_path: Option<&str>) -> Vec<LyricLine> {
+    pub fn load_lyrics(
+        &mut self,
+        title: &str,
+        artist: Option<&str>,
+        music_path: Option<&str>,
+    ) -> Vec<LyricLine> {
+        self.refresh_mapping_if_changed();
+
         if title.is_empty() {
             return Vec::new();
         }
@@ -85,6 +96,26 @@ impl LyricsCache {
         self.last_music_path = Some(music_path_str.to_string());
         self.last_lyrics.clone()
     }
+
+    fn refresh_mapping_if_changed(&mut self) {
+        let modified = mapping_modified_time();
+        if modified == self.mapping_modified {
+            return;
+        }
+
+        if let Ok(store) = MappingStore::load(&get_mapping_path()) {
+            self.mapping_store = Some(store);
+            self.mapping_modified = modified;
+            self.last_title = None;
+            self.last_artist = None;
+            self.last_music_path = None;
+            self.last_lyrics.clear();
+        }
+    }
+}
+
+fn mapping_modified_time() -> Option<SystemTime> {
+    fs::metadata(get_mapping_path()).ok()?.modified().ok()
 }
 
 fn find_lrc_file(directory: &str, title: &str, artist: Option<&str>) -> Option<String> {
