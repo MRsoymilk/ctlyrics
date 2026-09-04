@@ -8,7 +8,7 @@ pub enum SongListError {
 }
 
 pub fn generate_song_list(music_dir: &str, output_file: &str) -> Result<(), SongListError> {
-    let valid_extensions = [".mp3", ".flac", ".wav"];
+    let valid_extensions = ["mp3", "flac", "wav", "m4a", "ogg", "ape"];
     let mut songs = Vec::new();
 
     for entry in fs::read_dir(music_dir)? {
@@ -20,7 +20,7 @@ pub fn generate_song_list(music_dir: &str, output_file: &str) -> Result<(), Song
         }
 
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if !valid_extensions.contains(&ext) {
+        if !valid_extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
             continue;
         }
 

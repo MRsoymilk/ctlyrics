@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}映射管理 - ctlyrics{% endblock %}
+{% block content %}
+<h1>歌曲-歌词映射管理 <a href="/mappings/new" class="btn btn-primary" style="float:right;">新建映射</a></h1>
+
+{% if mappings.len() == 0 %}
+<div class="empty">
+    <p>暂无映射记录</p>
+    <a href="/mappings/new" class="btn btn-primary">创建第一个映射</a>
+</div>
+{% else %}
+<table>
+    <thead>
+        <tr>
+            <th>标题</th>
+            <th>艺术家</th>
+            <th>歌词文件</th>
+            <th>操作</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for m in mappings %}
+        <tr>
+            <td>{{ m.title }}</td>
+            <td>{{ m.artist }}</td>
+            <td>{{ m.lrc_filename }}</td>
+            <td>
+                <a href="/mappings/{{ m.id }}/edit" class="btn btn-secondary">编辑</a>
+                <form action="/mappings/{{ m.id }}/delete" method="post" class="inline" onsubmit="return confirm('确定删除？')">
+                    <button type="submit" class="btn btn-danger">删除</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+{% endblock %}

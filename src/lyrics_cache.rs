@@ -2,6 +2,8 @@ use regex::Regex;
 use std::fs;
 use std::path::Path;
 
+use crate::mapping::{MappingStore, SongMapping};
+
 #[derive(Debug, Clone)]
 pub struct LyricLine {
     pub timestamp: f64,
@@ -10,26 +12,68 @@ pub struct LyricLine {
 
 pub struct LyricsCache {
     last_title: Option<String>,
+    last_artist: Option<String>,
+    last_music_path: Option<String>,
     last_lyrics: Vec<LyricLine>,
+    mapping_store: Option<MappingStore>,
 }
 
 impl LyricsCache {
     pub fn new() -> Self {
         Self {
             last_title: None,
+            last_artist: None,
+            last_music_path: None,
             last_lyrics: Vec::new(),
+            mapping_store: None,
         }
     }
 
-    pub fn load_lyrics(&mut self, title: &str, artist: Option<&str>) -> Vec<LyricLine> {
+    pub fn with_mapping(mut self, store: MappingStore) -> Self {
+        self.mapping_store = Some(store);
+        self
+    }
+
+    pub fn load_lyrics(&mut self, title: &str, artist: Option<&str>, music_path: Option<&str>) -> Vec<LyricLine> {
         if title.is_empty() {
             return Vec::new();
         }
 
-        if self.last_title.as_deref() == Some(title) {
+        let artist_str = artist.unwrap_or("");
+        let music_path_str = music_path.unwrap_or("");
+
+        if self.last_title.as_deref() == Some(title)
+            && self.last_artist.as_deref() == Some(artist_str)
+            && self.last_music_path.as_deref() == Some(music_path_str)
+        {
             return self.last_lyrics.clone();
         }
 
+        // Try mapping by music path first (most accurate)
+        if let Some(ref store) = self.mapping_store {
+            if !music_path_str.is_empty() {
+                if let Some(mapping) = store.get_by_music_path(music_path_str) {
+                    let path = format!("lyrics/{}", mapping.lrc_filename);
+                    self.last_lyrics = parse_lrc(Path::new(&path));
+                    self.last_title = Some(title.to_string());
+                    self.last_artist = Some(artist_str.to_string());
+                    self.last_music_path = Some(music_path_str.to_string());
+                    return self.last_lyrics.clone();
+                }
+            }
+
+            // Fallback to title+artist matching
+            if let Some(mapping) = store.get_by_title_artist(title, artist_str) {
+                let path = format!("lyrics/{}", mapping.lrc_filename);
+                self.last_lyrics = parse_lrc(Path::new(&path));
+                self.last_title = Some(title.to_string());
+                self.last_artist = Some(artist_str.to_string());
+                self.last_music_path = Some(music_path_str.to_string());
+                return self.last_lyrics.clone();
+            }
+        }
+
+        // Fallback to file matching
         if let Some(path) = find_lrc_file("lyrics", title, artist) {
             self.last_lyrics = parse_lrc(Path::new(&path));
         } else {
@@ -37,6 +81,8 @@ impl LyricsCache {
         }
 
         self.last_title = Some(title.to_string());
+        self.last_artist = Some(artist_str.to_string());
+        self.last_music_path = Some(music_path_str.to_string());
         self.last_lyrics.clone()
     }
 }

@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ctlyrics - 歌曲歌词管理</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; line-height: 1.6; background: #fafafa; }
+        h1 { color: #333; display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        h1 a { font-size: 14px; font-weight: normal; }
+        .toolbar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+        .search-box { flex: 1; min-width: 200px; }
+        .search-box input { width: 100%; padding: 10px 14px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
+        .btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 18px; text-decoration: none; border-radius: 6px; font-size: 14px; border: none; cursor: pointer; font-weight: 500; transition: all 0.2s; }
+        .btn-primary { background: #4CAF50; color: white; }
+        .btn-secondary { background: #2196F3; color: white; }
+        .btn-danger { background: #f44336; color: white; }
+        .btn-ghost { background: transparent; color: #666; border: 1px solid #ddd; }
+        .btn:hover { opacity: 0.9; transform: translateY(-1px); }
+        .btn:active { transform: translateY(0); }
+        .music-dir-info { background: #e3f2fd; color: #1565c0; padding: 10px 16px; border-radius: 6px; margin-bottom: 20px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+        .music-dir-info.empty { background: #fff3e0; color: #e65100; }
+        table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+        th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid #eee; vertical-align: top; }
+        th { background: #fafafa; font-weight: 600; color: #555; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }
+        tr:hover { background: #fafafa; }
+        tr:last-child td { border-bottom: none; }
+        .song-title { font-weight: 600; color: #333; }
+        .song-artist { color: #888; font-size: 13px; }
+        .song-path { color: #999; font-size: 12px; font-family: monospace; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .lrc-file { color: #4CAF50; font-weight: 500; font-size: 13px; }
+        .lrc-file.empty { color: #ccc; font-style: italic; }
+        .lrc-preview { font-size: 12px; color: #666; background: #f9f9f9; padding: 8px; border-radius: 4px; font-family: monospace; max-height: 80px; overflow: auto; white-space: pre-wrap; }
+        .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .form-inline { display: inline; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; }
+        .modal.show { display: flex; }
+        .modal-content { background: white; padding: 24px; border-radius: 12px; width: 90%; max-width: 500px; max-height: 80vh; overflow: auto; }
+        .modal h2 { margin-top: 0; margin-bottom: 20px; }
+        .form-group { margin-bottom: 16px; }
+        .form-group label { display: block; margin-bottom: 6px; font-weight: 500; font-size: 14px; }
+        .form-group input, .form-group select { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
+        .form-group small { color: #999; font-size: 12px; margin-top: 4px; display: block; }
+        .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+        .empty-state { text-align: center; padding: 60px 20px; color: #999; }
+        .empty-state .btn { margin-top: 16px; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+        .badge-mapped { background: #e8f5e9; color: #2e7d32; }
+        .badge-unmapped { background: #fff3e0; color: #e65100; }
+        .message { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
+        .message.success { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+        .message.error { background: #ffebee; color: #c62828; border: 1px solid #ffcdd2; }
+    </style>
+</head>
+<body>
+    {% if has_music_dir %}
+    <div class="music-dir-info">
+        <span>ctlyrics</span>
+        <span>📁 音乐目录: {{ music_dir }}</span>
+        <button class="btn btn-ghost" style="padding: 6px 12px; font-size: 12px;" onclick="openSettingsModal()">修改</button>
+    </div>
+    {% else %}
+    <div class="music-dir-info empty">
+        <span>ctlyrics</span>
+        <span>⚠️ 未设置音乐目录</span>
+        <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px;" onclick="openSettingsModal()">去设置</button>
+    </div>
+    {% endif %}
+
+    <div class="toolbar">
+        <form class="search-box" method="get" action="/">
+            <input type="search" name="q" placeholder="搜索歌曲、艺术家、路径..." value="{{ search }}">
+        </form>
+        <span style="color: #999; font-size: 14px;">{{ songs.len() }} 首歌曲</span>
+    </div>
+
+    {% if songs.len() == 0 %}
+    <div class="empty-state">
+        {% if has_music_dir %}
+        <p>该目录下未找到音频文件</p>
+        {% else %}
+        <p>请先在设置中指定音乐目录</p>
+        {% endif %}
+    </div>
+    {% else %}
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 30%;">歌曲</th>
+                <th style="width: 20%;">文件路径</th>
+                <th style="width: 18%;">歌词文件</th>
+                <th style="width: 22%;">歌词预览</th>
+                <th style="width: 10%;">操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in songs %}
+            <tr>
+                <td>
+                    <div class="song-title">{{ row.song.title }}</div>
+                    <div class="song-artist">{{ row.song.artist }}</div>
+                    <span class="badge {% if row.has_lrc_filename %}badge-mapped{% else %}badge-unmapped{% endif %}">
+                        {% if row.has_lrc_filename %}已映射{% else %}未映射{% endif %}
+                    </span>
+                </td>
+                <td class="song-path" title="{{ row.song.path }}">{{ row.song.path }}</td>
+                <td>
+                    {% if row.has_lrc_filename %}
+                    <div class="lrc-file">{{ row.lrc_filename }}</div>
+                    {% else %}
+                    <div class="lrc-file empty">未映射</div>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if row.has_lrc_preview %}
+                    <div class="lrc-preview">{{ row.lrc_preview }}</div>
+                    {% else %}
+                    <span style="color: #ccc;">暂无歌词</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <div class="actions">
+                        {% if row.has_lrc_filename %}
+                        <form action="/unmap" method="post" class="form-inline" onsubmit="return confirm('确定取消映射？')">
+                            <input type="hidden" name="song_path" value="{{ row.song.path }}">
+                            <button type="submit" class="btn btn-danger" style="padding: 6px 12px; font-size: 12px;">取消映射</button>
+                        </form>
+                        <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="openMapModal('{{ row.song.path }}', '{{ row.song.title }}', '{{ row.song.artist }}', '{{ row.lrc_filename }}')">修改映射</button>
+                        {% else %}
+                        <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px;" onclick="openMapModal('{{ row.song.path }}', '{{ row.song.title }}', '{{ row.song.artist }}', '')">添加映射</button>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    <!-- Map Modal -->
+    <div class="modal" id="mapModal">
+        <div class="modal-content">
+            <h2 id="modalTitle">添加映射</h2>
+            <form id="mapForm" action="/map" method="post">
+                <input type="hidden" name="song_path" id="modalSongPath">
+                <div class="form-group">
+                    <label>标题</label>
+                    <input type="text" name="title" id="modalTitleInput" required>
+                </div>
+                <div class="form-group">
+                    <label>艺术家</label>
+                    <input type="text" name="artist" id="modalArtistInput">
+                </div>
+                <div class="form-group">
+                    <label>歌词文件 (.lrc)</label>
+                    <select name="lrc_filename" id="modalLrcSelect" required>
+                        <option value="">-- 选择歌词文件 --</option>
+                        {% for lrc in lrc_files %}
+                        <option value="{{ lrc }}">{{ lrc }}</option>
+                        {% endfor %}
+                    </select>
+                    <small>请先将 .lrc 文件放入 lyrics/ 目录</small>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-ghost" onclick="closeMapModal()">取消</button>
+                    <button type="submit" class="btn btn-primary">保存映射</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal" id="settingsModal">
+        <div class="modal-content">
+            <h2>设置音乐目录</h2>
+            <div id="settingsMessage"></div>
+            <form id="settingsForm" action="/settings" method="post">
+                <div class="form-group">
+                    <label>音乐目录路径</label>
+                    <input type="text" name="music_dir" id="settingsMusicDir" value="{{ music_dir }}" placeholder="/path/to/music" required>
+                    <small>支持的格式: mp3, flac, wav, m4a, ogg, ape</small>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-ghost" onclick="closeSettingsModal()">取消</button>
+                    <button type="submit" class="btn btn-primary">保存设置</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        function openMapModal(songPath, title, artist, currentLrc) {
+            document.getElementById('modalSongPath').value = songPath;
+            document.getElementById('modalTitleInput').value = title;
+            document.getElementById('modalArtistInput').value = artist;
+            document.getElementById('modalLrcSelect').value = currentLrc || '';
+            document.getElementById('modalTitle').textContent = currentLrc ? '修改映射' : '添加映射';
+            document.getElementById('mapModal').classList.add('show');
+        }
+        function closeMapModal() {
+            document.getElementById('mapModal').classList.remove('show');
+        }
+        document.getElementById('mapModal').addEventListener('click', function(e) {
+            if (e.target === this) closeMapModal();
+        });
+
+        function openSettingsModal() {
+            document.getElementById('settingsModal').classList.add('show');
+        }
+        function closeSettingsModal() {
+            document.getElementById('settingsModal').classList.remove('show');
+            document.getElementById('settingsMessage').innerHTML = '';
+        }
+        document.getElementById('settingsModal').addEventListener('click', function(e) {
+            if (e.target === this) closeSettingsModal();
+        });
+
+        document.getElementById('settingsForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            const response = await fetch('/settings', {
+                method: 'POST',
+                body: formData,
+            });
+            const html = await response.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+            const messageDiv = doc.getElementById('settingsMessage');
+            if (messageDiv) {
+                document.getElementById('settingsMessage').innerHTML = messageDiv.innerHTML;
+            }
+            // Update music dir display if success
+            if (response.ok && formData.get('music_dir')) {
+                document.getElementById('settingsMusicDir').value = formData.get('music_dir');
+                location.reload();
+            }
+        });
+    </script>
+</body>
+</html>

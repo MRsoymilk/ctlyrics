@@ -15,6 +15,7 @@ pub struct CmusInfo {
     pub status: String,
     pub title: String,
     pub artist: String,
+    pub file: String,
 }
 
 pub fn get_cmus_info() -> Result<CmusInfo, CmusError> {
@@ -37,7 +38,8 @@ fn parse_cmus_output(output: &str) -> Result<CmusInfo, CmusError> {
     let position_re = Regex::new(r"position (\d+)").unwrap();
     let duration_re = Regex::new(r"duration (\d+)").unwrap();
     let status_re = Regex::new(r"status (\w+)").unwrap();
-    let file_re = Regex::new(r"/([^/]+?)(?:\s*-\s*([^/.]+))?\.").unwrap();
+    let file_re = Regex::new(r"file (.+)").unwrap();
+    let title_artist_re = Regex::new(r"/([^/]+?)(?:\s*-\s*([^/.]+))?\.").unwrap();
 
     let position = position_re
         .captures(output)
@@ -57,8 +59,14 @@ fn parse_cmus_output(output: &str) -> Result<CmusInfo, CmusError> {
         .map(|m| m.as_str().to_string())
         .unwrap_or_else(|| "stopped".to_string());
 
-    let (title, artist) = file_re
+    let file = file_re
         .captures(output)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+        .unwrap_or_default();
+
+    let (title, artist) = title_artist_re
+        .captures(&file)
         .and_then(|c| {
             let title = c.get(1).map(|m| m.as_str().trim().to_string())?;
             let artist = c.get(2).map(|m| m.as_str().trim().to_string());
@@ -72,5 +80,6 @@ fn parse_cmus_output(output: &str) -> Result<CmusInfo, CmusError> {
         status,
         title,
         artist: artist.unwrap_or_else(|| "unknown".to_string()),
+        file,
     })
 }

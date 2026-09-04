@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}新建映射 - ctlyrics{% endblock %}
+{% block content %}
+<h1>新建映射</h1>
+
+<form method="post" action="/mappings">
+    <div class="form-group">
+        <label>标题 *</label>
+        <input type="text" name="title" required>
+    </div>
+    <div class="form-group">
+        <label>艺术家 *</label>
+        <input type="text" name="artist" required>
+    </div>
+    <div class="form-group">
+        <label>歌词文件名 (.lrc) *</label>
+        <input type="text" name="lrc_filename" required placeholder="example.lrc">
+        <small>文件需放在 lyrics/ 目录下</small>
+    </div>
+    <button type="submit" class="btn btn-primary">保存</button>
+    <a href="/mappings" class="btn btn-secondary">取消</a>
+</form>
+{% endblock %}
