@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=ctlyrics
+Comment=Terminal lyrics viewer for cmus
+Exec=ctlyrics
+Icon=ctlyrics
+Terminal=true
+Categories=AudioVideo;Audio;Player;

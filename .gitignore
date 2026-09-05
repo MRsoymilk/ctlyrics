@@ -9,3 +9,8 @@ error.txt
 
 # Added by cargo
 /target
+
+# AppImage packaging output and downloaded tools
+/package/build/
+/package/dist/
+/package/tools/

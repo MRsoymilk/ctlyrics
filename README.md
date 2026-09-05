@@ -83,6 +83,25 @@ target/release/ctlyrics
 cargo run
 ```
 
+### AppImage
+
+使用仓库内脚本安装本地打包依赖并生成 AppImage：
+
+```bash
+./package/install-dependencies.sh
+./package/build-appimage.sh
+```
+
+产物保存在 `package/dist/`。AppImage 内置 `tools/` 下的三个 Python 工具，可通过统一入口调用：
+
+```bash
+./package/dist/ctlyrics-0.1.1-x86_64.AppImage tools get-songs /path/to/music
+./package/dist/ctlyrics-0.1.1-x86_64.AppImage tools get-lyrics songs_list.txt
+./package/dist/ctlyrics-0.1.1-x86_64.AppImage tools auto-map --help
+```
+
+Python 工具直接调用宿主系统的 `python3`，不会预先检查是否安装。`cmus` 和 `cmus-remote` 也由宿主系统提供。详细打包说明见 [`package/README.md`](package/README.md)。
+
 指定界面语言：
 
 ```bash

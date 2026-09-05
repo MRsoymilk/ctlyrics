@@ -82,6 +82,25 @@ Or run it through Cargo:
 cargo run
 ```
 
+### AppImage
+
+Install the local packaging dependency and build the AppImage with the bundled scripts:
+
+```bash
+./package/install-dependencies.sh
+./package/build-appimage.sh
+```
+
+Artifacts are written to `package/dist/`. The AppImage bundles the three Python tools from `tools/` behind a common entry point:
+
+```bash
+./package/dist/ctlyrics-0.1.1-x86_64.AppImage tools get-songs /path/to/music
+./package/dist/ctlyrics-0.1.1-x86_64.AppImage tools get-lyrics songs_list.txt
+./package/dist/ctlyrics-0.1.1-x86_64.AppImage tools auto-map --help
+```
+
+The tools invoke the host's `python3` directly without checking whether it is installed. The host must also provide `cmus` and `cmus-remote`. See [`package/README.md`](package/README.md) for packaging details.
+
 Select the interface language:
 
 ```bash
