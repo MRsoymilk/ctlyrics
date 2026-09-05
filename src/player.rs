@@ -421,6 +421,10 @@ impl Player {
                         tr(self.locale, "help_mouse_wheel"),
                         tr(self.locale, "help_mouse_scroll"),
                     ),
+                    (
+                        tr(self.locale, "help_mouse_tray"),
+                        tr(self.locale, "help_mouse_tray_quit"),
+                    ),
                 ],
             ),
         ];

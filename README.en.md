@@ -33,10 +33,11 @@ web mode:
 - Load and expand complete lyric previews on demand
 - Use light, dark, or system web themes
 - Use English or Simplified Chinese in the Web UI, TUI, and CLI
+- Show a system tray icon while the TUI runs, with a right-click quit action
 
 ## Requirements
 
-- Rust 1.85 or newer (Rust 2024 Edition)
+- Rust 1.88 or newer (Rust 2024 Edition)
 - cmus installed and running
 - A working `cmus-remote -Q` command
 - A graphical browser when using `:web`
@@ -94,12 +95,14 @@ Install the local packaging dependency and build the AppImage with the bundled s
 Artifacts are written to `package/dist/`. The AppImage bundles the three Python tools from `tools/` behind a common entry point:
 
 ```bash
-./package/dist/ctlyrics-0.1.1-x86_64.AppImage tools get-songs /path/to/music
-./package/dist/ctlyrics-0.1.1-x86_64.AppImage tools get-lyrics songs_list.txt
-./package/dist/ctlyrics-0.1.1-x86_64.AppImage tools auto-map --help
+./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools get-songs /path/to/music
+./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools get-lyrics songs_list.txt
+./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools auto-map --help
 ```
 
 The tools invoke the host's `python3` directly without checking whether it is installed. The host must also provide `cmus` and `cmus-remote`. See [`package/README.md`](package/README.md) for packaging details.
+
+On Linux, the tray prefers StatusNotifierItem for KDE Plasma and Waybar, then falls back to XEmbed on X11 desktops such as AwesomeWM. GNOME Wayland requires an AppIndicator/KStatusNotifier extension. The lyrics interface continues to work when no tray host is available.
 
 Select the interface language:
 

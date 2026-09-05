@@ -34,10 +34,11 @@ web 模式：
 - 歌词预览支持按需加载并展开完整歌词
 - Web 支持亮色、暗色和跟随系统主题
 - 支持英文和简体中文，可在 Web、TUI 和 CLI 中切换
+- TUI 运行时显示系统托盘图标，可通过右键菜单关闭程序
 
 ## 环境要求
 
-- Rust 1.85 或更高版本（项目使用 Rust 2024 Edition）
+- Rust 1.88 或更高版本（项目使用 Rust 2024 Edition）
 - 已安装并运行 `cmus`
 - `cmus-remote -Q` 能够正常返回当前歌曲信息
 - 使用 `:web` 时需要可用的图形浏览器
@@ -95,12 +96,14 @@ cargo run
 产物保存在 `package/dist/`。AppImage 内置 `tools/` 下的三个 Python 工具，可通过统一入口调用：
 
 ```bash
-./package/dist/ctlyrics-0.1.1-x86_64.AppImage tools get-songs /path/to/music
-./package/dist/ctlyrics-0.1.1-x86_64.AppImage tools get-lyrics songs_list.txt
-./package/dist/ctlyrics-0.1.1-x86_64.AppImage tools auto-map --help
+./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools get-songs /path/to/music
+./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools get-lyrics songs_list.txt
+./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools auto-map --help
 ```
 
 Python 工具直接调用宿主系统的 `python3`，不会预先检查是否安装。`cmus` 和 `cmus-remote` 也由宿主系统提供。详细打包说明见 [`package/README.md`](package/README.md)。
+
+Linux 托盘优先使用 StatusNotifierItem，兼容 KDE Plasma 和启用 `tray` 模块的 Waybar；AwesomeWM 等 X11 环境自动回退到 XEmbed。GNOME Wayland 需要安装 AppIndicator/KStatusNotifier 扩展。托盘不可用时歌词界面仍可正常运行。
 
 指定界面语言：
 
