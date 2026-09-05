@@ -32,6 +32,7 @@ const FONT_SIZE: f32 = 14.0;
 const SCROLL_GAP: i32 = 48;
 const SYSTEM_TRAY_REQUEST_DOCK: u32 = 0;
 const XEMBED_MAPPED: u32 = 1;
+const XK_ESCAPE: u32 = 0xff1b;
 
 #[derive(Clone, Copy)]
 struct PixelFormat {
@@ -240,6 +241,7 @@ fn run_tray(
             .event_mask(
                 EventMask::EXPOSURE
                     | EventMask::BUTTON_PRESS
+                    | EventMask::KEY_PRESS
                     | EventMask::POINTER_MOTION
                     | EventMask::LEAVE_WINDOW,
             ),
@@ -293,6 +295,7 @@ fn run_tray(
     let mut menu_open = false;
     let mut quit_hovered = false;
     let mut menu_opened_at = Instant::now();
+    let escape_keycodes = escape_keycodes(&connection)?;
 
     while !stop.is_requested() && !exit.is_requested() {
         let current_snapshot = playback.snapshot();
@@ -377,6 +380,11 @@ fn run_tray(
                 Event::LeaveNotify(_) if menu_open => {
                     quit_hovered = false;
                 }
+                Event::KeyPress(event) if menu_open && escape_keycodes.contains(&event.detail) => {
+                    close_menu(&connection, menu)?;
+                    menu_open = false;
+                    quit_hovered = false;
+                }
                 Event::ButtonPress(event) if menu_open => {
                     let inside = event.event_x >= 0
                         && event.event_y >= 0
@@ -421,6 +429,7 @@ fn run_tray(
 
     if menu_open {
         let _ = connection.ungrab_pointer(CURRENT_TIME);
+        let _ = connection.ungrab_keyboard(CURRENT_TIME);
     }
     let _ = connection.destroy_window(menu);
     let _ = connection.destroy_window(icon);
@@ -667,6 +676,25 @@ fn is_quit_row(x: i16, y: i16) -> bool {
     x >= 0 && x < MENU_WIDTH as i16 && y >= INFO_HEIGHT as i16 && y < MENU_HEIGHT as i16
 }
 
+fn escape_keycodes(connection: &RustConnection) -> Result<Vec<u8>> {
+    let setup = connection.setup();
+    let count = setup.max_keycode - setup.min_keycode + 1;
+    let mapping = connection
+        .get_keyboard_mapping(setup.min_keycode, count)?
+        .reply()?;
+    let keysyms_per_keycode = usize::from(mapping.keysyms_per_keycode);
+    if keysyms_per_keycode == 0 {
+        return Ok(Vec::new());
+    }
+    Ok(mapping
+        .keysyms
+        .chunks(keysyms_per_keycode)
+        .enumerate()
+        .filter(|(_, keysyms)| keysyms.contains(&XK_ESCAPE))
+        .map(|(index, _)| setup.min_keycode + index as u8)
+        .collect())
+}
+
 fn rasterize_text(font: &Font, text: &str) -> RasterizedText {
     let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
     layout.reset(&LayoutSettings::default());
@@ -813,12 +841,16 @@ fn open_menu(
             CURRENT_TIME,
         )?
         .reply()?;
+    connection
+        .grab_keyboard(false, menu, CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)?
+        .reply()?;
     connection.flush()?;
     Ok(())
 }
 
 fn close_menu(connection: &RustConnection, menu: Window) -> Result<()> {
     connection.ungrab_pointer(CURRENT_TIME)?;
+    connection.ungrab_keyboard(CURRENT_TIME)?;
     connection.unmap_window(menu)?;
     connection.flush()?;
     Ok(())
