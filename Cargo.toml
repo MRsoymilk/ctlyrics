@@ -17,6 +17,7 @@ thiserror = "1"
 clap = { version = "4", features = ["derive", "string"] }
 dirs = "5"
 walkdir = "2"
+unicode-width = "0.1"
 
 # Web server
 axum = { version = "0.7", features = ["multipart"] }

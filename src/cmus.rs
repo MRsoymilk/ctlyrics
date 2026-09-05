@@ -9,6 +9,47 @@ pub enum CmusError {
     CommandFailed(String),
 }
 
+pub enum PlaybackCommand {
+    TogglePause,
+    Next,
+    Previous,
+    Stop,
+}
+
+pub fn control_cmus(command: PlaybackCommand) -> Result<(), CmusError> {
+    let argument = match command {
+        PlaybackCommand::TogglePause => "-u",
+        PlaybackCommand::Next => "-n",
+        PlaybackCommand::Previous => "-r",
+        PlaybackCommand::Stop => "-s",
+    };
+    let output = Command::new("cmus-remote")
+        .arg(argument)
+        .output()
+        .map_err(|error| CmusError::CommandFailed(error.to_string()))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(CmusError::CommandFailed(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
+}
+
+pub fn seek_cmus(position: u64) -> Result<(), CmusError> {
+    let output = Command::new("cmus-remote")
+        .args(["-k", &position.to_string()])
+        .output()
+        .map_err(|error| CmusError::CommandFailed(error.to_string()))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(CmusError::CommandFailed(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CmusInfo {
     pub position: u64,

@@ -89,10 +89,25 @@ Select the interface language:
 | Key | Action |
 |---|---|
 | `q` | Quit |
+| `Ctrl+C` | Quit safely and restore the terminal state |
+| `h` / `?` | Open or close the tree-style help page |
+| `Space` | Play / pause |
+| `n` | Next track |
+| `p` | Previous track |
+| `s` | Stop playback |
 | `Left` / `Right` | Adjust lyric offset by `-0.1s` / `+0.1s` |
 | `Up` / `Down` | Adjust lyric offset by `-0.5s` / `+0.5s` |
 | `:` | Enter command mode |
 | `Esc` | Leave command mode |
+| `:` (in command mode) | Clear the command and return to Normal mode |
+
+The help page presents global controls, help navigation, playback, lyric timing, command mode, commands, and mouse actions as a tree. Scroll line by line with `Up` / `Down` or `j` / `k`, by page with `PageUp` / `PageDown`, jump with `Home` / `End`, or use the mouse wheel. Press `Esc`, `h`, or `?` to return to the lyrics.
+
+The persistent player bar at the bottom shows the title, progress, time, and previous, play/pause, and next icons. All three playback icons support left-click control, and clicking the progress bar seeks directly to the corresponding position. Titles wider than the available area scroll back and forth automatically.
+
+Command output replaces the player bar for one second before the player returns automatically. While entering a command, the same row becomes the `:` input line.
+
+The controls use the Unicode text symbols `⏮︎`, `⏸︎`, `▶︎`, and `⏭︎` without a background color. The TUI uses the font configured by the terminal emulator and cannot load a bundled font itself, so use a terminal font that contains these glyphs for consistent rendering across devices.
 
 ### Command Mode
 
@@ -100,6 +115,7 @@ Press `:`, type a command, and press Enter:
 
 | Command | Action |
 |---|---|
+| `:help` | Open the tree-style help page |
 | `:web` | Start and open `http://localhost:3000` immediately |
 | `:lang en` | Switch to English and save the preference |
 | `:lang zh-CN` | Switch to Simplified Chinese and save the preference |
