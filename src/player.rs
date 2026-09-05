@@ -25,6 +25,10 @@ pub struct Player {
     pub command_buffer: String,
     pub message: String,
     locale: Locale,
+    help_visible: bool,
+    help_scroll: u16,
+    help_max_scroll: u16,
+    help_page_height: u16,
     message_expires_at: Option<Instant>,
     title_scroll_key: String,
     title_scroll_started: Instant,
@@ -43,6 +47,10 @@ impl Player {
             command_buffer: String::new(),
             message: String::new(),
             locale,
+            help_visible: false,
+            help_scroll: 0,
+            help_max_scroll: 0,
+            help_page_height: 1,
             message_expires_at: None,
             title_scroll_key: String::new(),
             title_scroll_started: Instant::now(),
@@ -57,6 +65,9 @@ impl Player {
     pub fn handle_input(&mut self, key: KeyEvent) -> bool {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return true;
+        }
+        if self.help_visible {
+            return self.handle_help_input(key);
         }
         if self.command_mode {
             match key.code {
@@ -83,6 +94,7 @@ impl Player {
         } else {
             match key.code {
                 KeyCode::Char('q') => return true,
+                KeyCode::Char('h') | KeyCode::Char('?') => self.open_help(),
                 KeyCode::Char(':') => {
                     self.command_mode = true;
                     self.command_buffer.clear();
@@ -102,6 +114,14 @@ impl Player {
     }
 
     pub fn handle_mouse(&mut self, event: MouseEvent) {
+        if self.help_visible {
+            match event.kind {
+                MouseEventKind::ScrollUp => self.scroll_help_up(3),
+                MouseEventKind::ScrollDown => self.scroll_help_down(3),
+                _ => {}
+            }
+            return;
+        }
         if self.command_mode || event.kind != MouseEventKind::Down(MouseButton::Left) {
             return;
         }
@@ -156,7 +176,9 @@ impl Player {
 
     fn execute_command(&mut self) {
         let cmd = self.command_buffer.trim().to_string();
-        if cmd == "love" {
+        if cmd == "help" {
+            self.open_help();
+        } else if cmd == "love" {
             self.show_message(tr(self.locale, "love_message").to_string());
         } else if cmd == "web" {
             if !WEB_SERVER_STARTED.load(Ordering::SeqCst) {
@@ -236,6 +258,12 @@ impl Player {
         let size = frame.area();
         self.expire_message();
 
+        if self.help_visible {
+            self.clear_mouse_areas();
+            self.draw_help(frame, size);
+            return;
+        }
+
         let vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(size);
 
         self.draw_lyrics(frame, vertical[0], lyrics, info.position);
@@ -254,6 +282,197 @@ impl Player {
         } else {
             self.draw_player_bar(frame, vertical[1], info);
         }
+    }
+
+    fn handle_help_input(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('q') => return true,
+            KeyCode::Esc | KeyCode::Char('h') | KeyCode::Char('?') => {
+                self.help_visible = false;
+                self.help_scroll = 0;
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.scroll_help_up(1),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll_help_down(1),
+            KeyCode::PageUp => self.scroll_help_up(self.help_page_height),
+            KeyCode::PageDown => self.scroll_help_down(self.help_page_height),
+            KeyCode::Home => self.help_scroll = 0,
+            KeyCode::End => self.help_scroll = self.help_max_scroll,
+            _ => {}
+        }
+        false
+    }
+
+    fn open_help(&mut self) {
+        self.command_mode = false;
+        self.command_buffer.clear();
+        self.help_visible = true;
+        self.help_scroll = 0;
+    }
+
+    fn scroll_help_up(&mut self, amount: u16) {
+        self.help_scroll = self.help_scroll.saturating_sub(amount);
+    }
+
+    fn scroll_help_down(&mut self, amount: u16) {
+        self.help_scroll = self
+            .help_scroll
+            .saturating_add(amount)
+            .min(self.help_max_scroll);
+    }
+
+    fn clear_mouse_areas(&mut self) {
+        self.progress_bar = None;
+        self.previous_button = None;
+        self.play_pause_button = None;
+        self.next_button = None;
+    }
+
+    fn draw_help(&mut self, frame: &mut Frame, area: Rect) {
+        let vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
+        let content_area = Rect::new(
+            vertical[0].x.saturating_add(1),
+            vertical[0].y,
+            vertical[0].width.saturating_sub(2),
+            vertical[0].height,
+        );
+        let lines = self.help_lines();
+        self.help_page_height = content_area.height.saturating_sub(1).max(1);
+        self.help_max_scroll = lines.len().saturating_sub(content_area.height as usize) as u16;
+        self.help_scroll = self.help_scroll.min(self.help_max_scroll);
+
+        frame.render_widget(
+            Paragraph::new(lines).scroll((self.help_scroll, 0)),
+            content_area,
+        );
+        frame.render_widget(
+            Paragraph::new(tr(self.locale, "help_footer"))
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::DarkGray)),
+            vertical[1],
+        );
+    }
+
+    fn help_lines(&self) -> Vec<Line<'static>> {
+        let sections: &[(&str, &[(&str, &str)])] = &[
+            (
+                tr(self.locale, "help_section_global"),
+                &[
+                    ("h / ?", tr(self.locale, "help_open")),
+                    ("q", tr(self.locale, "help_quit")),
+                    ("Ctrl+C", tr(self.locale, "help_safe_quit")),
+                ],
+            ),
+            (
+                tr(self.locale, "help_section_navigation"),
+                &[
+                    ("↑ / ↓, j / k", tr(self.locale, "help_scroll")),
+                    ("PgUp / PgDn", tr(self.locale, "help_page")),
+                    ("Home / End", tr(self.locale, "help_first_last")),
+                    ("Esc / h / ?", tr(self.locale, "help_close")),
+                ],
+            ),
+            (
+                tr(self.locale, "help_section_playback"),
+                &[
+                    ("Space", tr(self.locale, "help_toggle_playback")),
+                    ("n", tr(self.locale, "help_next")),
+                    ("p", tr(self.locale, "help_previous")),
+                    ("s", tr(self.locale, "help_stop")),
+                ],
+            ),
+            (
+                tr(self.locale, "help_section_lyrics"),
+                &[
+                    ("← / →", tr(self.locale, "help_offset_small")),
+                    ("↑ / ↓", tr(self.locale, "help_offset_large")),
+                ],
+            ),
+            (
+                tr(self.locale, "help_section_command_mode"),
+                &[
+                    (":", tr(self.locale, "help_command_open")),
+                    ("Enter", tr(self.locale, "help_command_run")),
+                    ("Backspace", tr(self.locale, "help_command_erase")),
+                    ("Esc / :", tr(self.locale, "help_command_cancel")),
+                ],
+            ),
+            (
+                tr(self.locale, "help_section_commands"),
+                &[
+                    (":help", tr(self.locale, "help_cmd_help")),
+                    (":web", tr(self.locale, "help_cmd_web")),
+                    (":lang en", tr(self.locale, "help_cmd_lang_en")),
+                    (":lang zh-CN", tr(self.locale, "help_cmd_lang_zh")),
+                    (":lang auto", tr(self.locale, "help_cmd_lang_auto")),
+                ],
+            ),
+            (
+                tr(self.locale, "help_section_mouse"),
+                &[
+                    (
+                        tr(self.locale, "help_mouse_buttons"),
+                        tr(self.locale, "help_mouse_control"),
+                    ),
+                    (
+                        tr(self.locale, "help_mouse_progress"),
+                        tr(self.locale, "help_mouse_seek"),
+                    ),
+                    (
+                        tr(self.locale, "help_mouse_wheel"),
+                        tr(self.locale, "help_mouse_scroll"),
+                    ),
+                ],
+            ),
+        ];
+
+        let mut lines = vec![Line::from(Span::styled(
+            tr(self.locale, "help_title"),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ))];
+        for (section_index, (section, entries)) in sections.iter().enumerate() {
+            let section_is_last = section_index + 1 == sections.len();
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if section_is_last {
+                        "└── "
+                    } else {
+                        "├── "
+                    },
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    *section,
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            for (entry_index, (key, description)) in entries.iter().enumerate() {
+                let entry_is_last = entry_index + 1 == entries.len();
+                let prefix = match (section_is_last, entry_is_last) {
+                    (false, false) => "│   ├── ",
+                    (false, true) => "│   └── ",
+                    (true, false) => "    ├── ",
+                    (true, true) => "    └── ",
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!(
+                            "{key}{}",
+                            " ".repeat(18usize.saturating_sub(UnicodeWidthStr::width(*key)))
+                        ),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(*description),
+                ]));
+            }
+        }
+        lines
     }
 
     fn draw_player_bar(&mut self, frame: &mut Frame, area: Rect, info: &CmusInfo) {
@@ -497,6 +716,71 @@ mod tests {
             player.command_mode = command_mode;
             assert!(player.handle_input(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL,)));
         }
+    }
+
+    #[test]
+    fn help_tree_opens_from_keys_and_command() {
+        for key in [KeyCode::Char('h'), KeyCode::Char('?')] {
+            let mut player = Player::new(Locale::En);
+            assert!(!player.handle_input(KeyEvent::new(key, KeyModifiers::NONE)));
+            assert!(player.help_visible);
+            assert!(!player.handle_input(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE,)));
+            assert!(!player.help_visible);
+        }
+
+        let mut player = Player::new(Locale::En);
+        player.handle_input(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+        for character in "help".chars() {
+            player.handle_input(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        player.handle_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(player.help_visible);
+        assert!(!player.command_mode);
+    }
+
+    #[test]
+    fn help_tree_is_localized_and_scrollable() {
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut player = Player::new(Locale::ZhCn);
+        player.handle_input(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        let help_text = player
+            .help_lines()
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter())
+            .map(|span| span.content.into_owned())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(help_text.contains("ctlyrics 帮助"));
+        assert!(help_text.contains("全局"));
+
+        terminal
+            .draw(|frame| player.draw(frame, &CmusInfo::default(), &[]))
+            .unwrap();
+        let top = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(top.contains("ctlyrics"));
+        assert!(player.help_max_scroll > 0);
+
+        player.handle_input(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        terminal
+            .draw(|frame| player.draw(frame, &CmusInfo::default(), &[]))
+            .unwrap();
+        let bottom = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert_eq!(player.help_scroll, player.help_max_scroll);
+        assert!(bottom.contains("鼠"));
+        assert!(bottom.contains("播"));
     }
 
     #[test]

@@ -90,6 +90,7 @@ Select the interface language:
 |---|---|
 | `q` | Quit |
 | `Ctrl+C` | Quit safely and restore the terminal state |
+| `h` / `?` | Open or close the tree-style help page |
 | `Space` | Play / pause |
 | `n` | Next track |
 | `p` | Previous track |
@@ -99,6 +100,8 @@ Select the interface language:
 | `:` | Enter command mode |
 | `Esc` | Leave command mode |
 | `:` (in command mode) | Clear the command and return to Normal mode |
+
+The help page presents global controls, help navigation, playback, lyric timing, command mode, commands, and mouse actions as a tree. Scroll line by line with `Up` / `Down` or `j` / `k`, by page with `PageUp` / `PageDown`, jump with `Home` / `End`, or use the mouse wheel. Press `Esc`, `h`, or `?` to return to the lyrics.
 
 The persistent player bar at the bottom shows the title, progress, time, and previous, play/pause, and next icons. All three playback icons support left-click control, and clicking the progress bar seeks directly to the corresponding position. Titles wider than the available area scroll back and forth automatically.
 
@@ -112,6 +115,7 @@ Press `:`, type a command, and press Enter:
 
 | Command | Action |
 |---|---|
+| `:help` | Open the tree-style help page |
 | `:web` | Start and open `http://localhost:3000` immediately |
 | `:lang en` | Switch to English and save the preference |
 | `:lang zh-CN` | Switch to Simplified Chinese and save the preference |
