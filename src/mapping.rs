@@ -48,10 +48,6 @@ impl MappingStore {
         Ok(())
     }
 
-    pub fn get(&self, id: &str) -> Option<&SongMapping> {
-        self.mappings.get(id)
-    }
-
     pub fn get_by_music_path(&self, music_path: &str) -> Option<&SongMapping> {
         self.mappings.values().find(|m| m.music_path == music_path)
     }
@@ -60,12 +56,6 @@ impl MappingStore {
         self.mappings
             .values()
             .find(|m| m.title.eq_ignore_ascii_case(title) && m.artist.eq_ignore_ascii_case(artist))
-    }
-
-    pub fn list(&self) -> Vec<&SongMapping> {
-        let mut v: Vec<_> = self.mappings.values().collect();
-        v.sort_by(|a, b| a.title.cmp(&b.title));
-        v
     }
 
     pub fn insert(&mut self, mapping: SongMapping) {
@@ -86,9 +76,13 @@ impl MappingStore {
 }
 
 pub fn generate_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-    format!("{:x}", now.as_millis())
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("{:x}{:x}", now.as_nanos(), sequence)
 }
 
 pub fn get_mapping_path() -> PathBuf {

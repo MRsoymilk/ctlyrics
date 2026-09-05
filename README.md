@@ -16,6 +16,8 @@
 - 网页支持拖拽上传一个或多个 `.lrc` 文件
 - 网页保存音乐目录时显示加载进度
 - 网页修改映射后，终端自动重新加载映射配置
+- Web 支持亮色、暗色和跟随系统主题
+- 支持英文和简体中文，可在 Web、TUI 和 CLI 中切换
 
 ## 环境要求
 
@@ -65,6 +67,14 @@ target/release/ctlyrics
 cargo run
 ```
 
+指定界面语言：
+
+```bash
+./target/debug/ctlyrics --lang en
+./target/debug/ctlyrics --lang zh-CN
+./target/debug/ctlyrics --lang auto
+```
+
 ### 控制键
 
 | 按键 | 功能 |
@@ -82,8 +92,49 @@ cargo run
 | 命令 | 功能 |
 |---|---|
 | `:web` | 即时启动 `http://localhost:3000` 并使用默认浏览器打开 |
+| `:lang en` | 切换为英文并保存设置 |
+| `:lang zh-CN` | 切换为简体中文并保存设置 |
+| `:lang auto` | 清除语言设置并跟随系统语言 |
 
 Web 服务在当前 `ctlyrics` 进程内后台运行，不需要提前单独启动。
+
+## 语言设置
+
+目前支持：
+
+- English (`en`)
+- 简体中文 (`zh-CN`)
+
+未手动选择语言时：
+
+- Web 根据浏览器的 `Accept-Language` 自动选择
+- TUI 和 CLI 根据 `LC_ALL`、`LC_MESSAGES`、`LANG` 自动选择
+- 无法识别时回退到英文
+
+网页右上角可以选择自动、English 或简体中文，选择结果保存在浏览器 Cookie 中。TUI 使用 `:lang` 命令切换，选择结果保存在当前工作目录的 `config/language` 中。
+
+语言文本集中存放于：
+
+```text
+locales/en.json
+locales/zh-CN.json
+```
+
+新增语言时应提供与英文资源完全一致的翻译键。
+
+## Web 主题
+
+网页顶部工具栏使用下拉框提供三种主题模式：
+
+- 自动：跟随浏览器的 `prefers-color-scheme`
+- 亮色：使用暖白纸张风格
+- 暗色：使用炭黑唱片库风格
+
+主题切换即时生效并保存在浏览器的 `localStorage.ctlyrics-theme` 中。自动模式下，系统主题变化时网页会同步切换。主题初始化在页面绘制前完成，避免刷新时出现亮暗闪烁。
+
+桌面端将 ctlyrics 标识、音乐目录配置、语言和主题放在同一行；窄屏设备会根据可用宽度自动换行。
+
+页面针对桌面、平板和手机进行了响应式处理：桌面使用曲目表格，手机宽度下自动切换为歌曲卡片和底部模态面板。
 
 ### 单独启动 Web 服务
 
@@ -145,13 +196,66 @@ cmus-remote -Q
 
 `[ti:]`、`[ar:]`、`[al:]` 等元数据不会显示为歌词。
 
+## 歌词下载工具
+
+`tools/` 中保留了早期 Python 版本的本地歌曲列表生成和歌词下载工具。脚本只使用 Python 标准库，不需要额外安装依赖。
+
+先从音乐目录生成列表：
+
+```bash
+python3 tools/get_songs_from_directory.py /path/to/music -o songs_list.txt
+```
+
+脚本默认递归扫描 `.mp3`、`.flac`、`.wav`、`.m4a`、`.ogg` 和 `.ape`，并按 `歌曲名 - 歌手.ext` 解析文件名。只扫描目录第一层时使用 `--no-recursive`。
+
+再从原版本使用的 `sq0527.cn` 搜索并下载 LRC：
+
+```bash
+python3 tools/get_lyrics.py songs_list.txt -o lyrics
+```
+
+下载器默认按标题和歌手相关度选择结果、跳过已有文件，并在请求失败时重试。常用选项：
+
+```bash
+# 手动选择每首歌的搜索结果
+python3 tools/get_lyrics.py songs_list.txt --interactive
+
+# 仅测试搜索和匹配，不写入歌词
+python3 tools/get_lyrics.py songs_list.txt --dry-run
+
+# 覆盖已有歌词并调整请求间隔
+python3 tools/get_lyrics.py songs_list.txt --overwrite --delay 1
+```
+
+失败项写入 `error.txt`。网站结构或可用性由第三方维护，批量下载时请控制请求频率并遵守网站条款及当地版权规定。
+
+歌词下载完成后，可以自动写入 ctlyrics 映射。配置目录中需要已有 `mappings.json` 和有效的 `music_dir`：
+
+```bash
+python3 tools/auto_map.py \
+  --lyrics-dir ~/warehouse/ctlyrics/lyrics \
+  --config-dir ~/warehouse/ctlyrics/config
+```
+
+建议先预览匹配结果：
+
+```bash
+python3 tools/auto_map.py \
+  --lyrics-dir ~/warehouse/ctlyrics/lyrics \
+  --config-dir ~/warehouse/ctlyrics/config \
+  --dry-run
+```
+
+自动映射默认保留已有手动映射，只写入高置信度且无歧义的匹配。工具不会移动或修改 `--lyrics-dir` 中的源文件，而是将目标歌词复制到配置目录同级的 `lyrics/`，例如指定 `/opt/ctlyrics/config` 时复制到 `/opt/ctlyrics/lyrics`。这与 ctlyrics 固定从运行目录下 `lyrics/` 读取的规则一致。使用 `--overwrite` 可更新已有映射并覆盖目标歌词；使用 `--music-dir /path/to/music` 可覆盖配置中的音乐目录。实际写入前，原配置会备份为 `mappings.json.bak`。修改外部配置后需要重启 Web 服务。
+
 ## 工作目录
 
 所有运行数据都相对于启动程序时的当前工作目录，而不是可执行文件所在目录：
 
 ```text
 config/mappings.json   # 音乐目录和歌词映射
-lyrics/                # LRC 歌词文件
+config/language        # TUI 和 CLI 语言设置
+lyrics/                # LRC 歌词目录
 log/                   # 程序日志
 ```
 
@@ -177,6 +281,7 @@ cd target/debug
 ```text
 src/
   main.rs          主程序入口和 TUI 事件循环
+  i18n.rs          语言检测、翻译加载和偏好设置
   player.rs        TUI 渲染、输入和命令处理
   cmus.rs          cmus-remote 查询与歌曲信息解析
   lyrics_cache.rs  映射刷新、LRC 查找和解析
@@ -185,11 +290,20 @@ src/
   logger.rs        日志初始化
 templates/
   index.html       Web 管理页面
+locales/
+  en.json          英文语言资源
+  zh-CN.json       简体中文语言资源
+tools/
+  get_songs_from_directory.py  从音乐目录生成歌曲列表
+  get_lyrics.py                 搜索并下载 LRC 歌词
+  auto_map.py                   自动生成歌曲与歌词映射
 ```
 
 ## 开发验证
 
 ```bash
 cargo build
+cargo test i18n::tests
 cargo test --no-run
+python3 -m unittest discover tools
 ```

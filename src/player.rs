@@ -1,16 +1,17 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use open;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use tokio;
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use tokio;
 
+use crate::i18n::{Locale, format as tr_format, preferred_locale, set_preference, tr};
 use crate::lyrics_cache::LyricLine;
 
 static WEB_SERVER_STARTED: AtomicBool = AtomicBool::new(false);
@@ -20,16 +21,18 @@ pub struct Player {
     pub command_mode: bool,
     pub command_buffer: String,
     pub message: String,
+    locale: Locale,
     last_size: Option<(u16, u16)>,
 }
 
 impl Player {
-    pub fn new() -> Self {
+    pub fn new(locale: Locale) -> Self {
         Self {
             offset: 0.0,
             command_mode: false,
             command_buffer: String::new(),
             message: String::new(),
+            locale,
             last_size: None,
         }
     }
@@ -71,26 +74,56 @@ impl Player {
     }
 
     fn execute_command(&mut self) {
-        let cmd = self.command_buffer.trim();
+        let cmd = self.command_buffer.trim().to_string();
         if cmd == "love" {
-            self.message = "to my beloved Can'.".to_string();
+            self.message = tr(self.locale, "love_message").to_string();
         } else if cmd == "web" {
             if !WEB_SERVER_STARTED.load(Ordering::SeqCst) {
                 self.start_web_server();
             }
             if let Err(e) = open::that("http://localhost:3000") {
-                self.message = format!("Failed to open browser: {}", e);
+                self.message = tr_format(
+                    self.locale,
+                    "browser_open_failed",
+                    &[("error", &e.to_string())],
+                );
             } else {
-                self.message = "Opened http://localhost:3000".to_string();
+                self.message = tr(self.locale, "browser_opened").to_string();
             }
+        } else if let Some(language) = cmd.strip_prefix("lang ") {
+            if !language.eq_ignore_ascii_case("auto") && Locale::from_code(language).is_none() {
+                self.message = tr(self.locale, "language_invalid").to_string();
+                self.command_buffer.clear();
+                return;
+            }
+            match set_preference(language) {
+                Ok(locale) => {
+                    self.locale = locale;
+                    let key = if language.eq_ignore_ascii_case("auto") {
+                        "language_auto"
+                    } else {
+                        "language_changed"
+                    };
+                    self.message = tr(self.locale, key).to_string();
+                }
+                Err(error) => {
+                    self.message = tr_format(
+                        self.locale,
+                        "language_save_failed",
+                        &[("error", &error.to_string())],
+                    );
+                }
+            }
+        } else if cmd == "lang" {
+            self.message = tr(self.locale, "language_invalid").to_string();
         } else if !cmd.is_empty() {
-            self.message = format!("exec: {}", cmd);
+            self.message = tr_format(self.locale, "command_unknown", &[("command", &cmd)]);
         }
         self.command_buffer.clear();
     }
 
     fn start_web_server(&mut self) {
-        self.message = "Starting web server...".to_string();
+        self.message = tr(self.locale, "web_starting").to_string();
         thread::spawn(|| {
             let Ok(rt) = tokio::runtime::Runtime::new() else {
                 tracing::error!("failed to create web server runtime");
@@ -112,7 +145,7 @@ impl Player {
             });
         });
         WEB_SERVER_STARTED.store(true, Ordering::SeqCst);
-        self.message = "Web server started on http://localhost:3000".to_string();
+        self.message = tr(self.locale, "web_started").to_string();
     }
 
     pub fn draw(&mut self, frame: &mut Frame, info: &CmusInfo, lyrics: &[LyricLine]) {
@@ -133,9 +166,29 @@ impl Player {
     }
 
     fn draw_song_info(&self, frame: &mut Frame, area: Rect, info: &CmusInfo) {
+        let title = if info.title.is_empty() {
+            tr(self.locale, "unknown_title")
+        } else {
+            &info.title
+        };
+        let artist = if info.artist.is_empty() {
+            tr(self.locale, "unknown_artist")
+        } else {
+            &info.artist
+        };
+        let status = match info.status.as_str() {
+            "playing" => tr(self.locale, "status_playing"),
+            "paused" => tr(self.locale, "status_paused"),
+            "stopped" => tr(self.locale, "status_stopped"),
+            _ => tr(self.locale, "status_unknown"),
+        };
         let text = format!(
-            "{} - {} [{}] (Offset: {:.1}s)",
-            info.title, info.artist, info.status, self.offset
+            "{} - {} [{}] ({}: {:.1}s)",
+            title,
+            artist,
+            status,
+            tr(self.locale, "offset"),
+            self.offset
         );
         let paragraph = Paragraph::new(text).style(Style::default().fg(Color::White));
         frame.render_widget(paragraph, area);
@@ -154,9 +207,11 @@ impl Player {
         let time_width = time_str.len() as u16 + 1;
 
         let available_width = area.width.saturating_sub(time_width);
-        let progress = ((info.position as f64 / info.duration as f64) * available_width as f64) as u16;
+        let progress =
+            ((info.position as f64 / info.duration as f64) * available_width as f64) as u16;
 
-        let bar = "=".repeat(progress as usize) + &"-".repeat((available_width - progress) as usize);
+        let bar =
+            "=".repeat(progress as usize) + &"-".repeat((available_width - progress) as usize);
         let line = Line::from(vec![
             Span::raw(bar),
             Span::raw(" "),
@@ -190,7 +245,9 @@ impl Player {
         for i in start_line..end_line {
             let line = &lyrics[i];
             let style = if i == current_line {
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -215,7 +272,7 @@ impl Player {
 
 impl Default for Player {
     fn default() -> Self {
-        Self::new()
+        Self::new(preferred_locale())
     }
 }
 
