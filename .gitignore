@@ -5,7 +5,7 @@ config/
 __pycache__/
 *.py[cod]
 /songs_list.txt
-/error.txt
+error.txt
 
 # Added by cargo
 /target

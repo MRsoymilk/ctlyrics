@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from auto_map import NamedFile, copy_lyric, find_match
 from get_lyrics import (
     LyricsPageParser,
     SearchPageParser,
@@ -28,6 +29,39 @@ class SongListTests(unittest.TestCase):
                 [song.line() for song in scan_music_directory(root)],
                 ["First - Artist A", "Second - Artist B"],
             )
+
+
+class AutoMapTests(unittest.TestCase):
+    def test_copies_lyric_without_changing_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source" / "Title.lrc"
+            destination = root / "runtime" / "lyrics" / "Title.lrc"
+            source.parent.mkdir()
+            source.write_text("[00:01.00]Original\n", encoding="utf-8")
+
+            self.assertEqual(copy_lyric(source, destination, False, False), "copied")
+            self.assertEqual(destination.read_text(encoding="utf-8"), "[00:01.00]Original\n")
+            self.assertEqual(source.read_text(encoding="utf-8"), "[00:01.00]Original\n")
+
+    def test_finds_matching_title_and_artist(self) -> None:
+        music = NamedFile(Path("Title - Artist.mp3"), "Title", "Artist")
+        lyrics = [
+            NamedFile(Path("Other - Artist.lrc"), "Other", "Artist"),
+            NamedFile(Path("Title - Artist.lrc"), "Title", "Artist"),
+        ]
+        match, score = find_match(music, lyrics, 0.88, 0.08)
+        self.assertEqual(match, lyrics[1])
+        self.assertEqual(score, 1.0)
+
+    def test_rejects_ambiguous_matches(self) -> None:
+        music = NamedFile(Path("Title.mp3"), "Title", "")
+        lyrics = [
+            NamedFile(Path("Title - Artist A.lrc"), "Title", "Artist A"),
+            NamedFile(Path("Title - Artist B.lrc"), "Title", "Artist B"),
+        ]
+        match, _ = find_match(music, lyrics, 0.88, 0.08)
+        self.assertIsNone(match)
 
 
 class LyricsTests(unittest.TestCase):

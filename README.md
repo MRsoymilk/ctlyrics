@@ -229,6 +229,25 @@ python3 tools/get_lyrics.py songs_list.txt --overwrite --delay 1
 
 失败项写入 `error.txt`。网站结构或可用性由第三方维护，批量下载时请控制请求频率并遵守网站条款及当地版权规定。
 
+歌词下载完成后，可以自动写入 ctlyrics 映射。配置目录中需要已有 `mappings.json` 和有效的 `music_dir`：
+
+```bash
+python3 tools/auto_map.py \
+  --lyrics-dir ~/warehouse/ctlyrics/lyrics \
+  --config-dir ~/warehouse/ctlyrics/config
+```
+
+建议先预览匹配结果：
+
+```bash
+python3 tools/auto_map.py \
+  --lyrics-dir ~/warehouse/ctlyrics/lyrics \
+  --config-dir ~/warehouse/ctlyrics/config \
+  --dry-run
+```
+
+自动映射默认保留已有手动映射，只写入高置信度且无歧义的匹配。工具不会移动或修改 `--lyrics-dir` 中的源文件，而是将目标歌词复制到配置目录同级的 `lyrics/`，例如指定 `/opt/ctlyrics/config` 时复制到 `/opt/ctlyrics/lyrics`。这与 ctlyrics 固定从运行目录下 `lyrics/` 读取的规则一致。使用 `--overwrite` 可更新已有映射并覆盖目标歌词；使用 `--music-dir /path/to/music` 可覆盖配置中的音乐目录。实际写入前，原配置会备份为 `mappings.json.bak`。修改外部配置后需要重启 Web 服务。
+
 ## 工作目录
 
 所有运行数据都相对于启动程序时的当前工作目录，而不是可执行文件所在目录：
@@ -236,7 +255,7 @@ python3 tools/get_lyrics.py songs_list.txt --overwrite --delay 1
 ```text
 config/mappings.json   # 音乐目录和歌词映射
 config/language        # TUI 和 CLI 语言设置
-lyrics/                # LRC 歌词文件
+lyrics/                # LRC 歌词目录
 log/                   # 程序日志
 ```
 
@@ -277,6 +296,7 @@ locales/
 tools/
   get_songs_from_directory.py  从音乐目录生成歌曲列表
   get_lyrics.py                 搜索并下载 LRC 歌词
+  auto_map.py                   自动生成歌曲与歌词映射
 ```
 
 ## 开发验证
