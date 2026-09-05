@@ -32,4 +32,5 @@ open = "5"
 fontdue = "0.9"
 image = { version = "0.25", default-features = false, features = ["png"] }
 ksni = { version = "0.3", features = ["blocking"] }
+notify-rust = "4"
 x11rb = "0.13"

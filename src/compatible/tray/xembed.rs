@@ -12,7 +12,7 @@ use x11rb::CURRENT_TIME;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
-    Atom, ChangeGCAux, ChangeWindowAttributesAux, ClientMessageEvent, ConfigureWindowAux,
+    Atom, AtomEnum, ChangeGCAux, ChangeWindowAttributesAux, ClientMessageEvent, ConfigureWindowAux,
     ConnectionExt as _, CreateGCAux, CreateWindowAux, EventMask, GrabMode, ImageFormat, ImageOrder,
     PropMode, Rectangle, StackMode, Window, WindowClass,
 };
@@ -54,6 +54,10 @@ const QUIT_TOP: u16 = 98;
 const SYSTEM_TRAY_REQUEST_DOCK: u32 = 0;
 const XEMBED_MAPPED: u32 = 1;
 const XK_ESCAPE: u32 = 0xff1b;
+const BUBBLE_PADDING: usize = 14;
+const BUBBLE_MAX_WIDTH: u16 = 520;
+const BUBBLE_MARGIN: i32 = 10;
+const BUBBLE_FRAME_INTERVAL: Duration = Duration::from_millis(40);
 
 #[derive(Clone, Copy)]
 struct PixelFormat {
@@ -83,6 +87,12 @@ enum MenuTarget {
     Toggle,
     Next,
     Quit,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LyricOrientation {
+    Horizontal,
+    Vertical,
 }
 
 impl MenuContent {
@@ -213,6 +223,13 @@ fn run_tray(
     let tray_opcode = atom(&connection, b"_NET_SYSTEM_TRAY_OPCODE")?;
     let xembed_info = atom(&connection, b"_XEMBED_INFO")?;
     let manager = atom(&connection, b"MANAGER")?;
+    let net_wm_window_type = atom(&connection, b"_NET_WM_WINDOW_TYPE")?;
+    let net_wm_window_type_notification = atom(&connection, b"_NET_WM_WINDOW_TYPE_NOTIFICATION")?;
+    let net_wm_state = atom(&connection, b"_NET_WM_STATE")?;
+    let net_wm_state_above = atom(&connection, b"_NET_WM_STATE_ABOVE")?;
+    let net_wm_state_sticky = atom(&connection, b"_NET_WM_STATE_STICKY")?;
+    let net_wm_state_skip_taskbar = atom(&connection, b"_NET_WM_STATE_SKIP_TASKBAR")?;
+    let net_wm_state_skip_pager = atom(&connection, b"_NET_WM_STATE_SKIP_PAGER")?;
 
     connection.change_window_attributes(
         root,
@@ -241,6 +258,45 @@ fn run_tray(
                     | EventMask::BUTTON_RELEASE
                     | EventMask::STRUCTURE_NOTIFY,
             ),
+    )?;
+
+    let bubble = connection.generate_id()?;
+    connection.create_window(
+        depth,
+        bubble,
+        root,
+        0,
+        0,
+        1,
+        1,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        visual,
+        &CreateWindowAux::new()
+            .background_pixel(black)
+            .border_pixel(black)
+            .override_redirect(1)
+            .save_under(1)
+            .event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS),
+    )?;
+    connection.change_property32(
+        PropMode::REPLACE,
+        bubble,
+        net_wm_window_type,
+        AtomEnum::ATOM,
+        &[net_wm_window_type_notification],
+    )?;
+    connection.change_property32(
+        PropMode::REPLACE,
+        bubble,
+        net_wm_state,
+        AtomEnum::ATOM,
+        &[
+            net_wm_state_above,
+            net_wm_state_sticky,
+            net_wm_state_skip_taskbar,
+            net_wm_state_skip_pager,
+        ],
     )?;
     connection.change_property32(
         PropMode::REPLACE,
@@ -283,6 +339,12 @@ fn run_tray(
         &CreateGCAux::new().foreground(white).background(black),
     )?;
     let menu_gc = connection.generate_id()?;
+    let bubble_gc = connection.generate_id()?;
+    connection.create_gc(
+        bubble_gc,
+        bubble,
+        &CreateGCAux::new().foreground(white).background(black),
+    )?;
     let font = connection.generate_id()?;
     connection.open_font(font, b"fixed")?;
     connection.create_gc(
@@ -315,30 +377,50 @@ fn run_tray(
 
     let quit_label = tr(locale, "tray_quit");
     let mut playback_snapshot = playback.snapshot();
-    let mut menu_font = load_menu_font(&format!("{} {quit_label}", playback_snapshot.line));
+    let mut menu_font = load_menu_font(&format!(
+        "{} {} {quit_label}",
+        playback_snapshot.line, playback_snapshot.lyric
+    ));
     let mut menu_content = menu_font
         .as_ref()
         .map(|font| MenuContent::new(font, &playback_snapshot.line, quit_label));
+    let mut bubble_text = menu_font
+        .as_ref()
+        .map(|font| rasterize_text(font, &playback_snapshot.lyric));
     let mut icon_width = ICON_SIZE;
     let mut icon_height = ICON_SIZE;
     let mut menu_open = false;
     let mut hovered = None;
     let mut menu_opened_at = Instant::now();
+    let mut bubble_visible = false;
+    let mut bubble_orientation = LyricOrientation::Horizontal;
+    let mut bubble_anchor = (0_i16, 0_i16);
+    let mut bubble_started_at = Instant::now();
+    let mut last_bubble_draw = Instant::now();
+    let mut last_left_click = None;
     let escape_keycodes = escape_keycodes(&connection)?;
 
     while !stop.is_requested() && !exit.is_requested() {
         let current_snapshot = playback.snapshot();
         if current_snapshot.revision != playback_snapshot.revision {
-            if menu_font
-                .as_ref()
-                .is_none_or(|font| !font_supports(font, &current_snapshot.line))
-            {
-                menu_font = load_menu_font(&format!("{} {quit_label}", current_snapshot.line));
+            if menu_font.as_ref().is_none_or(|font| {
+                !font_supports(font, &current_snapshot.line)
+                    || !font_supports(font, &current_snapshot.lyric)
+            }) {
+                menu_font = load_menu_font(&format!(
+                    "{} {} {quit_label}",
+                    current_snapshot.line, current_snapshot.lyric
+                ));
             }
             menu_content = menu_font
                 .as_ref()
                 .map(|font| MenuContent::new(font, &current_snapshot.line, quit_label));
+            bubble_text = menu_font
+                .as_ref()
+                .map(|font| rasterize_text(font, &current_snapshot.lyric));
             menu_opened_at = Instant::now();
+            bubble_started_at = Instant::now();
+            last_bubble_draw = Instant::now() - BUBBLE_FRAME_INTERVAL;
         }
         playback_snapshot = current_snapshot;
         while let Some(event) = connection.poll_for_event()? {
@@ -379,7 +461,60 @@ fn run_tray(
                         pixel_format,
                     )?;
                 }
+                Event::Expose(event) if event.window == bubble && event.count == 0 => {
+                    last_bubble_draw = Instant::now() - BUBBLE_FRAME_INTERVAL;
+                }
+                Event::ButtonPress(event) if event.event == icon && event.detail == 1 => {
+                    let duplicate = last_left_click
+                        .is_some_and(|last: u32| event.time.wrapping_sub(last) < 200);
+                    if !duplicate {
+                        last_left_click = Some(event.time);
+                        if bubble_visible {
+                            hide_bubble(&connection, bubble)?;
+                            bubble_visible = false;
+                        } else {
+                            bubble_anchor = (event.root_x, event.root_y);
+                            bubble_started_at = Instant::now();
+                            if let Some(text) = bubble_text.as_ref() {
+                                draw_lyric_bubble(
+                                    &connection,
+                                    bubble,
+                                    bubble_gc,
+                                    pixel_format,
+                                    text,
+                                    bubble_orientation,
+                                    bubble_started_at.elapsed(),
+                                    bubble_anchor,
+                                    screen.width_in_pixels,
+                                    screen.height_in_pixels,
+                                )?;
+                            }
+                            connection.map_window(bubble)?;
+                            connection.flush()?;
+                            bubble_visible = true;
+                        }
+                    }
+                }
+                Event::ButtonPress(event) if event.event == bubble && event.detail == 1 => {
+                    hide_bubble(&connection, bubble)?;
+                    bubble_visible = false;
+                }
+                Event::ButtonPress(event)
+                    if (event.event == icon || event.event == bubble)
+                        && matches!(event.detail, 4 | 5) =>
+                {
+                    bubble_orientation = match event.detail {
+                        4 => LyricOrientation::Horizontal,
+                        _ => LyricOrientation::Vertical,
+                    };
+                    bubble_started_at = Instant::now();
+                    last_bubble_draw = Instant::now() - BUBBLE_FRAME_INTERVAL;
+                }
                 Event::ButtonPress(event) if event.event == icon && event.detail == 3 => {
+                    if bubble_visible {
+                        hide_bubble(&connection, bubble)?;
+                        bubble_visible = false;
+                    }
                     menu_opened_at = Instant::now();
                     draw_menu(
                         &connection,
@@ -475,6 +610,23 @@ fn run_tray(
                 hovered,
             )?;
         }
+        if bubble_visible && last_bubble_draw.elapsed() >= BUBBLE_FRAME_INTERVAL {
+            if let Some(text) = bubble_text.as_ref() {
+                draw_lyric_bubble(
+                    &connection,
+                    bubble,
+                    bubble_gc,
+                    pixel_format,
+                    text,
+                    bubble_orientation,
+                    bubble_started_at.elapsed(),
+                    bubble_anchor,
+                    screen.width_in_pixels,
+                    screen.height_in_pixels,
+                )?;
+            }
+            last_bubble_draw = Instant::now();
+        }
         thread::sleep(Duration::from_millis(20));
     }
 
@@ -483,8 +635,10 @@ fn run_tray(
         let _ = connection.ungrab_keyboard(CURRENT_TIME);
     }
     let _ = connection.destroy_window(menu);
+    let _ = connection.destroy_window(bubble);
     let _ = connection.destroy_window(icon);
     let _ = connection.free_gc(menu_gc);
+    let _ = connection.free_gc(bubble_gc);
     let _ = connection.free_gc(icon_gc);
     let _ = connection.close_font(font);
     let _ = connection.flush();
@@ -514,6 +668,240 @@ fn draw_icon(
     )?;
     connection.flush()?;
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_lyric_bubble(
+    connection: &RustConnection,
+    window: Window,
+    gc: u32,
+    format: PixelFormat,
+    text: &RasterizedText,
+    orientation: LyricOrientation,
+    elapsed: Duration,
+    anchor: (i16, i16),
+    screen_width: u16,
+    screen_height: u16,
+) -> Result<()> {
+    let (rgba, width, height) =
+        render_lyric_bubble(text, orientation, elapsed, screen_width, screen_height);
+    let max_x = i32::from(screen_width.saturating_sub(width));
+    let max_y = i32::from(screen_height.saturating_sub(height));
+    let x = (i32::from(anchor.0) - i32::from(width) / 2).clamp(0, max_x);
+    let y = if i32::from(anchor.1) < i32::from(screen_height) / 2 {
+        (i32::from(anchor.1) + i32::from(ICON_SIZE) + BUBBLE_MARGIN).clamp(0, max_y)
+    } else {
+        (i32::from(anchor.1) - i32::from(height) - BUBBLE_MARGIN).clamp(0, max_y)
+    };
+    connection.configure_window(
+        window,
+        &ConfigureWindowAux::new()
+            .x(x)
+            .y(y)
+            .width(u32::from(width))
+            .height(u32::from(height))
+            .stack_mode(StackMode::ABOVE),
+    )?;
+    let image = native_x11_pixels(&rgba, width, height, format)?;
+    connection.put_image(
+        ImageFormat::Z_PIXMAP,
+        window,
+        gc,
+        width,
+        height,
+        0,
+        0,
+        0,
+        format.depth,
+        &image,
+    )?;
+    connection.flush()?;
+    Ok(())
+}
+
+fn render_lyric_bubble(
+    text: &RasterizedText,
+    orientation: LyricOrientation,
+    elapsed: Duration,
+    screen_width: u16,
+    screen_height: u16,
+) -> (Vec<u8>, u16, u16) {
+    let padding = BUBBLE_PADDING * 2;
+    let (width, height) = match orientation {
+        LyricOrientation::Horizontal => {
+            let limit = usize::from(BUBBLE_MAX_WIDTH.min(screen_width.saturating_sub(16))).max(1);
+            (
+                (text.width + padding).min(limit).max(limit.min(80)),
+                (text.height + padding).max(42),
+            )
+        }
+        LyricOrientation::Vertical => {
+            let limit = usize::from(screen_height.saturating_sub(16)).max(1);
+            (
+                (text.height + padding).max(42),
+                (text.width + padding).min(limit).max(limit.min(80)),
+            )
+        }
+    };
+    let width = width.min(usize::from(u16::MAX)) as u16;
+    let height = height.min(usize::from(u16::MAX)) as u16;
+    let mut pixels = vec![0; usize::from(width) * usize::from(height) * 4];
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        pixel[..3].copy_from_slice(&[10, 16, 20]);
+        pixel[3] = 255;
+    }
+    fill_dynamic_rect(&mut pixels, width, height, 0, 0, width, 1, [70, 230, 158]);
+    fill_dynamic_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        height as i16 - 1,
+        width,
+        1,
+        [70, 230, 158],
+    );
+    fill_dynamic_rect(&mut pixels, width, height, 0, 0, 1, height, [70, 230, 158]);
+    fill_dynamic_rect(
+        &mut pixels,
+        width,
+        height,
+        width as i16 - 1,
+        0,
+        1,
+        height,
+        [70, 230, 158],
+    );
+
+    match orientation {
+        LyricOrientation::Horizontal => {
+            draw_horizontal_lyric(&mut pixels, width, height, text, elapsed)
+        }
+        LyricOrientation::Vertical => {
+            draw_vertical_lyric(&mut pixels, width, height, text, elapsed)
+        }
+    }
+    (pixels, width, height)
+}
+
+fn draw_horizontal_lyric(
+    pixels: &mut [u8],
+    width: u16,
+    height: u16,
+    text: &RasterizedText,
+    elapsed: Duration,
+) {
+    let viewport = usize::from(width).saturating_sub(BUBBLE_PADDING * 2);
+    let overflow = text.width > viewport;
+    let cycle = text.width + SCROLL_GAP as usize;
+    let scroll = if overflow {
+        (elapsed.as_millis() as usize / 35) % cycle
+    } else {
+        0
+    };
+    let left = if overflow {
+        BUBBLE_PADDING
+    } else {
+        (usize::from(width).saturating_sub(text.width)) / 2
+    };
+    let top = (usize::from(height).saturating_sub(text.height)) / 2;
+    for destination_x in 0..viewport {
+        let source_x = if overflow {
+            (scroll + destination_x) % cycle
+        } else {
+            destination_x
+        };
+        if source_x >= text.width {
+            continue;
+        }
+        for source_y in 0..text.height {
+            blend_dynamic_pixel(
+                pixels,
+                width,
+                left + destination_x,
+                top + source_y,
+                text.alpha[source_y * text.width + source_x],
+            );
+        }
+    }
+}
+
+fn draw_vertical_lyric(
+    pixels: &mut [u8],
+    width: u16,
+    height: u16,
+    text: &RasterizedText,
+    elapsed: Duration,
+) {
+    let viewport = usize::from(height).saturating_sub(BUBBLE_PADDING * 2);
+    let overflow = text.width > viewport;
+    let cycle = text.width + SCROLL_GAP as usize;
+    let scroll = if overflow {
+        (elapsed.as_millis() as usize / 35) % cycle
+    } else {
+        0
+    };
+    let top = if overflow {
+        BUBBLE_PADDING
+    } else {
+        (usize::from(height).saturating_sub(text.width)) / 2
+    };
+    let left = (usize::from(width).saturating_sub(text.height)) / 2;
+    for destination_y in 0..viewport {
+        let source_axis = if overflow {
+            (scroll + destination_y) % cycle
+        } else {
+            destination_y
+        };
+        if source_axis >= text.width {
+            continue;
+        }
+        let source_x = text.width - 1 - source_axis;
+        for source_y in 0..text.height {
+            blend_dynamic_pixel(
+                pixels,
+                width,
+                left + source_y,
+                top + destination_y,
+                text.alpha[source_y * text.width + source_x],
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_dynamic_rect(
+    pixels: &mut [u8],
+    canvas_width: u16,
+    canvas_height: u16,
+    x: i16,
+    y: i16,
+    width: u16,
+    height: u16,
+    color: [u8; 3],
+) {
+    let left = x.max(0) as usize;
+    let top = y.max(0) as usize;
+    let right = (i32::from(x) + i32::from(width)).clamp(0, i32::from(canvas_width)) as usize;
+    let bottom = (i32::from(y) + i32::from(height)).clamp(0, i32::from(canvas_height)) as usize;
+    for row in top..bottom {
+        for column in left..right {
+            let offset = (row * usize::from(canvas_width) + column) * 4;
+            pixels[offset..offset + 3].copy_from_slice(&color);
+        }
+    }
+}
+
+fn blend_dynamic_pixel(pixels: &mut [u8], width: u16, x: usize, y: usize, alpha: u8) {
+    if x >= usize::from(width) || y * usize::from(width) * 4 >= pixels.len() {
+        return;
+    }
+    let alpha = u16::from(alpha);
+    let offset = (y * usize::from(width) + x) * 4;
+    for channel in 0..3 {
+        let background = u16::from(pixels[offset + channel]);
+        pixels[offset + channel] = ((245 * alpha + background * (255 - alpha)) / 255) as u8;
+    }
 }
 
 fn native_x11_image(width: u16, height: u16, format: PixelFormat) -> Result<Vec<u8>> {
@@ -1119,6 +1507,12 @@ fn close_menu(connection: &RustConnection, menu: Window) -> Result<()> {
     connection.ungrab_pointer(CURRENT_TIME)?;
     connection.ungrab_keyboard(CURRENT_TIME)?;
     connection.unmap_window(menu)?;
+    connection.flush()?;
+    Ok(())
+}
+
+fn hide_bubble(connection: &RustConnection, bubble: Window) -> Result<()> {
+    connection.unmap_window(bubble)?;
     connection.flush()?;
     Ok(())
 }

@@ -42,6 +42,7 @@ struct PlaybackInfo(Arc<RwLock<PlaybackSnapshot>>);
 #[derive(Clone, Default)]
 struct PlaybackSnapshot {
     line: String,
+    lyric: String,
     status: String,
     position: u64,
     duration: u64,
@@ -52,6 +53,7 @@ impl PlaybackInfo {
     fn new(locale: Locale) -> Self {
         Self(Arc::new(RwLock::new(PlaybackSnapshot {
             line: playback_line(locale, "", "", "stopped"),
+            lyric: tr(locale, "no_lyrics").to_string(),
             status: "stopped".to_string(),
             position: 0,
             duration: 0,
@@ -59,11 +61,20 @@ impl PlaybackInfo {
         })))
     }
 
-    fn update(&self, line: String, status: &str, position: u64, duration: u64) -> bool {
+    #[allow(clippy::too_many_arguments)]
+    fn update(
+        &self,
+        line: String,
+        lyric: &str,
+        status: &str,
+        position: u64,
+        duration: u64,
+    ) -> bool {
         let mut snapshot = self.0.write().unwrap_or_else(|error| error.into_inner());
-        let changed = snapshot.line != line || snapshot.status != status;
+        let changed = snapshot.line != line || snapshot.lyric != lyric || snapshot.status != status;
         if changed {
             snapshot.line = line;
+            snapshot.lyric = lyric.to_string();
             snapshot.status = status.to_string();
             snapshot.revision = snapshot.revision.wrapping_add(1);
         }
@@ -196,9 +207,11 @@ impl TrayService {
         status: &str,
         position: u64,
         duration: u64,
+        lyric: &str,
     ) {
         if !self.playback.update(
             playback_line(locale, title, artist, status),
+            lyric,
             status,
             position,
             duration,

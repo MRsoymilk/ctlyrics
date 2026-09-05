@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use ksni::{Icon, MenuItem, Tray, blocking::TrayMethods, menu::StandardItem};
+use notify_rust::{Hint, Notification, NotificationHandle, Timeout};
 
 use crate::cmus::{PlaybackCommand, control_cmus};
 use crate::i18n::{Locale, tr};
@@ -26,6 +27,7 @@ struct TrayItem {
     locale: Locale,
     scroll_step: usize,
     scroll_active_until: Arc<AtomicU64>,
+    notification_commands: mpsc::Sender<NotificationCommand>,
 }
 
 impl Tray for TrayItem {
@@ -43,6 +45,13 @@ impl Tray for TrayItem {
             height: 32,
             data: self.icon.clone(),
         }]
+    }
+
+    fn activate(&mut self, _x: i32, _y: i32) {
+        let lyric = self.playback.snapshot().lyric;
+        let _ = self
+            .notification_commands
+            .send(NotificationCommand::Toggle(lyric));
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
@@ -114,6 +123,8 @@ impl Tray for TrayItem {
 pub struct SniTray {
     commands: mpsc::Sender<Command>,
     thread: Option<JoinHandle<()>>,
+    notification_commands: mpsc::Sender<NotificationCommand>,
+    notification_thread: Option<JoinHandle<()>>,
 }
 
 enum Command {
@@ -121,8 +132,19 @@ enum Command {
     Shutdown,
 }
 
+enum NotificationCommand {
+    Toggle(String),
+    Update(String),
+    Shutdown,
+}
+
 impl SniTray {
     pub fn start(locale: Locale, exit: ExitSignal, playback: PlaybackInfo) -> Result<Self> {
+        let (notification_tx, notification_rx) = mpsc::channel();
+        let notification_thread = thread::Builder::new()
+            .name("ctlyrics-lyric-notification".to_string())
+            .spawn(move || run_notifications(notification_rx))
+            .context("failed to start lyric notification thread")?;
         let scroll_active_until = Arc::new(AtomicU64::new(0));
         let item = TrayItem {
             exit,
@@ -132,6 +154,7 @@ impl SniTray {
             locale,
             scroll_step: 0,
             scroll_active_until: scroll_active_until.clone(),
+            notification_commands: notification_tx.clone(),
         };
         let (command_tx, command_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -152,7 +175,13 @@ impl SniTray {
                 loop {
                     match command_rx.recv_timeout(SCROLL_INTERVAL) {
                         Ok(Command::Refresh) => {
-                            let _ = handle.update(|item| item.scroll_step = 0);
+                            let _ = handle.update(|item| {
+                                item.scroll_step = 0;
+                                let lyric = item.playback.snapshot().lyric;
+                                let _ = item
+                                    .notification_commands
+                                    .send(NotificationCommand::Update(lyric));
+                            });
                         }
                         Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
                         Err(RecvTimeoutError::Timeout) => {
@@ -173,6 +202,8 @@ impl SniTray {
         Ok(Self {
             commands: command_tx,
             thread: Some(thread),
+            notification_commands: notification_tx,
+            notification_thread: Some(notification_thread),
         })
     }
 
@@ -183,6 +214,12 @@ impl SniTray {
     pub fn shutdown(mut self) {
         let _ = self.commands.send(Command::Shutdown);
         if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        let _ = self
+            .notification_commands
+            .send(NotificationCommand::Shutdown);
+        if let Some(thread) = self.notification_thread.take() {
             let _ = thread.join();
         }
     }
@@ -219,4 +256,46 @@ fn run_control(command: PlaybackCommand) {
             tracing::warn!(%error, "tray playback control failed");
         }
     });
+}
+
+fn run_notifications(commands: mpsc::Receiver<NotificationCommand>) {
+    let mut handle: Option<NotificationHandle> = None;
+    while let Ok(command) = commands.recv() {
+        match command {
+            NotificationCommand::Toggle(lyric) => {
+                if let Some(current) = handle.take() {
+                    current.close();
+                } else {
+                    handle = show_notification(&lyric);
+                }
+            }
+            NotificationCommand::Update(lyric) => {
+                if let Some(current) = handle.as_mut() {
+                    current.body(&lyric);
+                    if current.update().is_err() {
+                        handle = None;
+                    }
+                }
+            }
+            NotificationCommand::Shutdown => {
+                if let Some(current) = handle.take() {
+                    current.close();
+                }
+                break;
+            }
+        }
+    }
+}
+
+fn show_notification(lyric: &str) -> Option<NotificationHandle> {
+    Notification::new()
+        .appname("ctlyrics")
+        .summary("ctlyrics")
+        .body(lyric)
+        .icon("audio-x-generic")
+        .hint(Hint::Resident(true))
+        .timeout(Timeout::Never)
+        .show()
+        .map_err(|error| tracing::debug!(%error, "lyric notification unavailable"))
+        .ok()
 }

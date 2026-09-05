@@ -16,7 +16,7 @@ use ctlyrics::cmus::get_cmus_info;
 use ctlyrics::compatible::tray::{ExitSignal, TrayService};
 use ctlyrics::i18n::{Locale, detect_system_locale, preferred_locale, set_preference, tr};
 use ctlyrics::logger::init_logger;
-use ctlyrics::lyrics_cache::LyricsCache;
+use ctlyrics::lyrics_cache::{LyricsCache, current_lyric_line};
 use ctlyrics::mapping::{MappingStore, get_mapping_path};
 use ctlyrics::player::Player;
 
@@ -151,6 +151,10 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
             break;
         }
         let info = get_cmus_info().unwrap_or_default();
+        let lyrics = lyrics_cache.load_lyrics(&info.title, Some(&info.artist), Some(&info.file));
+        let lyric = current_lyric_line(&lyrics, info.position as f64 + player.lyric_offset())
+            .map(|line| line.text.as_str())
+            .unwrap_or_else(|| tr(locale, "no_lyrics"));
         tray.update_playback(
             locale,
             &info.title,
@@ -158,8 +162,8 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
             &info.status,
             info.position,
             info.duration,
+            lyric,
         );
-        let lyrics = lyrics_cache.load_lyrics(&info.title, Some(&info.artist), Some(&info.file));
 
         terminal.draw(|frame| player.draw(frame, &info, &lyrics))?;
 

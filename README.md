@@ -103,7 +103,7 @@ cargo run
 
 Python 工具直接调用宿主系统的 `python3`，不会预先检查是否安装。`cmus` 和 `cmus-remote` 也由宿主系统提供。详细打包说明见 [`package/README.md`](package/README.md)。
 
-Linux 托盘优先使用 StatusNotifierItem，兼容 KDE Plasma 和启用 `tray` 模块的 Waybar；AwesomeWM 等 X11 环境自动回退到 XEmbed。右键菜单会显示当前歌曲、歌手、播放状态和进度，并提供上一首、播放/暂停、下一首控制；XEmbed 进度条支持点击跳转，歌曲信息超宽时自动滚动。GNOME Wayland 需要安装 AppIndicator/KStatusNotifier 扩展。托盘不可用时歌词界面仍可正常运行。
+Linux 托盘优先使用 StatusNotifierItem，兼容 KDE Plasma 和启用 `tray` 模块的 Waybar；AwesomeWM 等 X11 环境自动回退到 XEmbed。右键菜单会显示当前歌曲、歌手、播放状态和进度，并提供上一首、播放/暂停、下一首控制；XEmbed 进度条支持点击跳转，歌曲信息超宽时自动滚动。左键可显示或隐藏置于普通窗口之上的当前歌词气泡，在托盘或气泡上滚动鼠标滚轮可切换横向和逆时针旋转 90° 的纵向显示。SNI/Wayland 使用系统通知显示当前歌词。GNOME Wayland 需要安装 AppIndicator/KStatusNotifier 扩展。托盘不可用时歌词界面仍可正常运行。
 
 指定界面语言：
 

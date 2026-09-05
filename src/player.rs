@@ -15,7 +15,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::cmus::{PlaybackCommand, control_cmus, seek_cmus};
 use crate::i18n::{Locale, format as tr_format, preferred_locale, set_preference, tr};
-use crate::lyrics_cache::LyricLine;
+use crate::lyrics_cache::{LyricLine, current_lyric_index};
 
 static WEB_SERVER_STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -60,6 +60,10 @@ impl Player {
             play_pause_button: None,
             next_button: None,
         }
+    }
+
+    pub fn lyric_offset(&self) -> f64 {
+        self.offset
     }
 
     pub fn handle_input(&mut self, key: KeyEvent) -> bool {
@@ -425,6 +429,14 @@ impl Player {
                         tr(self.locale, "help_mouse_tray"),
                         tr(self.locale, "help_mouse_tray_quit"),
                     ),
+                    (
+                        tr(self.locale, "help_mouse_tray_left"),
+                        tr(self.locale, "help_mouse_tray_lyric"),
+                    ),
+                    (
+                        tr(self.locale, "help_mouse_tray_wheel"),
+                        tr(self.locale, "help_mouse_tray_orientation"),
+                    ),
                 ],
             ),
         ];
@@ -584,15 +596,7 @@ impl Player {
         }
 
         let adjusted_pos = position as f64 + self.offset;
-        let mut current_line = 0;
-
-        for (i, line) in lyrics.iter().enumerate() {
-            if adjusted_pos >= line.timestamp {
-                current_line = i;
-            } else {
-                break;
-            }
-        }
+        let current_line = current_lyric_index(lyrics, adjusted_pos).unwrap_or(0);
 
         let visible_lines = area.height as usize;
         let start_line = current_line.saturating_sub(visible_lines / 2);

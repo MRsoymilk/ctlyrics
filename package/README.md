@@ -27,6 +27,7 @@ working directory.
 
 The TUI system tray supports StatusNotifierItem hosts on Wayland and falls
 back to XEmbed on X11. Its right-click menu shows playback progress and media
-controls, and scrolls long song information. GNOME requires an
+controls, and left-clicking shows the current lyric in an always-above bubble
+or system notification. GNOME requires an
 AppIndicator/KStatusNotifier shell extension. If no tray host is available,
 the TUI continues without an icon.
