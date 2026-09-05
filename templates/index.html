@@ -4,68 +4,205 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ text.page_title }}</title>
+    <meta name="color-scheme" content="light dark">
+    <script>
+        (() => {
+            let preference = 'auto';
+            try {
+                preference = localStorage.getItem('ctlyrics-theme') || 'auto';
+            } catch (_) {}
+            const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            document.documentElement.dataset.themePreference = preference;
+            document.documentElement.dataset.theme = preference === 'auto' ? (dark ? 'dark' : 'light') : preference;
+        })();
+    </script>
     <style>
+        :root {
+            color-scheme: light;
+            --page-bg: #eee9de;
+            --page-glow: rgba(176, 154, 105, 0.22);
+            --surface: #faf7ef;
+            --surface-raised: #fffdf8;
+            --surface-soft: #f1ede3;
+            --ink: #24251f;
+            --muted: #747266;
+            --faint: #9b988b;
+            --line: #d9d2c3;
+            --line-strong: #bdb4a2;
+            --accent: #47704d;
+            --accent-strong: #2f5736;
+            --accent-soft: #dfe9dd;
+            --warning: #98672c;
+            --warning-soft: #f4e7d2;
+            --danger: #994b48;
+            --danger-soft: #f3dedb;
+            --success: #396641;
+            --success-soft: #dcebdc;
+            --shadow: 0 22px 60px rgba(64, 55, 39, 0.10);
+            --shadow-small: 0 8px 24px rgba(64, 55, 39, 0.08);
+            --overlay: rgba(31, 31, 26, 0.55);
+        }
+        :root[data-theme="dark"] {
+            color-scheme: dark;
+            --page-bg: #171915;
+            --page-glow: rgba(123, 151, 112, 0.13);
+            --surface: #20231e;
+            --surface-raised: #272a24;
+            --surface-soft: #1b1e1a;
+            --ink: #ece9df;
+            --muted: #aaa99f;
+            --faint: #7f8178;
+            --line: #3a3e36;
+            --line-strong: #555b50;
+            --accent: #91b594;
+            --accent-strong: #b2d0b3;
+            --accent-soft: #293b2b;
+            --warning: #ddb06f;
+            --warning-soft: #3d3020;
+            --danger: #e0948f;
+            --danger-soft: #422827;
+            --success: #9ac39d;
+            --success-soft: #263a29;
+            --shadow: 0 24px 70px rgba(0, 0, 0, 0.30);
+            --shadow-small: 0 8px 24px rgba(0, 0, 0, 0.22);
+            --overlay: rgba(5, 7, 5, 0.72);
+        }
         * { box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; line-height: 1.6; background: #fafafa; }
-        h1 { color: #333; display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-        h1 a { font-size: 14px; font-weight: normal; }
-        .toolbar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
-        .search-box { flex: 1; min-width: 200px; }
-        .search-box input { width: 100%; padding: 10px 14px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
-        .btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 18px; text-decoration: none; border-radius: 6px; font-size: 14px; border: none; cursor: pointer; font-weight: 500; transition: all 0.2s; }
-        .btn-primary { background: #4CAF50; color: white; }
-        .btn-secondary { background: #2196F3; color: white; }
-        .btn-danger { background: #f44336; color: white; }
-        .btn-ghost { background: transparent; color: #666; border: 1px solid #ddd; }
-        .btn:hover { opacity: 0.9; transform: translateY(-1px); }
-        .btn:active { transform: translateY(0); }
-        .music-dir-info { background: #e3f2fd; color: #1565c0; padding: 10px 16px; border-radius: 6px; margin-bottom: 20px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
-        .music-dir-info.empty { background: #fff3e0; color: #e65100; }
-        table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-        th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid #eee; vertical-align: top; }
-        th { background: #fafafa; font-weight: 600; color: #555; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }
-        tr:hover { background: #fafafa; }
-        tr:last-child td { border-bottom: none; }
-        .song-title { font-weight: 600; color: #333; }
-        .song-artist { color: #888; font-size: 13px; }
-        .song-path { color: #999; font-size: 12px; font-family: monospace; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .lrc-file { color: #4CAF50; font-weight: 500; font-size: 13px; }
-        .lrc-file.empty { color: #ccc; font-style: italic; }
-        .lrc-preview { font-size: 12px; color: #666; background: #f9f9f9; padding: 8px; border-radius: 4px; font-family: monospace; max-height: 80px; overflow: auto; white-space: pre-wrap; }
-        .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        html { min-height: 100%; background: var(--page-bg); }
+        body { min-height: 100vh; margin: 0; color: var(--ink); background: radial-gradient(circle at 12% 0%, var(--page-glow), transparent 34rem), var(--page-bg); font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif; line-height: 1.55; transition: background-color 0.25s, color 0.25s; }
+        button, input, select { font: inherit; }
+        button, select { color: inherit; }
+        .app-shell { width: min(1380px, calc(100% - 48px)); margin: 0 auto; padding: 34px 0 56px; }
+        .masthead { display: grid; grid-template-columns: auto minmax(220px, 1fr) auto; align-items: center; gap: 18px; margin-bottom: 24px; }
+        .brand { display: flex; align-items: center; gap: 13px; }
+        .brand-mark { display: grid; place-items: center; width: 46px; height: 46px; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--surface-raised); background: var(--ink); font: 700 12px/1 ui-monospace, monospace; letter-spacing: 0.12em; box-shadow: inset 0 0 0 5px var(--ink), inset 0 0 0 6px color-mix(in srgb, var(--surface-raised) 25%, transparent); }
+        .brand-name { display: block; font-family: Georgia, "Noto Serif SC", serif; font-size: clamp(24px, 3vw, 34px); line-height: 1; letter-spacing: -0.035em; }
+        .brand-kicker { display: block; margin-top: 5px; color: var(--muted); font: 600 10px/1.2 ui-monospace, monospace; letter-spacing: 0.18em; }
+        .control-deck { display: flex; align-items: center; gap: 6px; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--surface-raised) 86%, transparent); box-shadow: var(--shadow-small); }
+        .control-group { display: flex; align-items: center; gap: 7px; }
+        .control-label { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+        .control-group select { height: 34px; padding: 0 28px 0 10px; border: 0; border-radius: 7px; outline: 0; color: var(--ink); background: var(--surface-soft); font-size: 12px; cursor: pointer; }
+        .control-group + .control-group { padding-left: 7px; border-left: 1px solid var(--line); }
+        .directory-inline { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; min-width: 0; padding: 8px 9px 8px 13px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 4px 11px 11px 4px; background: color-mix(in srgb, var(--surface-raised) 82%, transparent); box-shadow: var(--shadow-small); }
+        .directory-label { color: var(--accent-strong); font: 700 10px/1 ui-monospace, monospace; letter-spacing: 0.12em; text-transform: uppercase; }
+        .directory-value { min-width: 0; overflow: hidden; color: var(--ink); font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+        .directory-inline.empty { border-left-color: var(--warning); background: var(--warning-soft); }
+        .toolbar { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+        .search-box { position: relative; flex: 1; }
+        .search-box::before { position: absolute; top: 50%; left: 15px; width: 8px; height: 8px; border: 1.5px solid var(--muted); border-radius: 50%; content: ""; transform: translateY(-65%); pointer-events: none; }
+        .search-box::after { position: absolute; top: 54%; left: 24px; width: 6px; height: 1.5px; background: var(--muted); content: ""; transform: rotate(45deg); pointer-events: none; }
+        .search-box input { width: 100%; height: 46px; padding: 0 16px 0 39px; border: 1px solid var(--line); border-radius: 11px; outline: none; color: var(--ink); background: var(--surface-raised); box-shadow: var(--shadow-small); }
+        .search-box input::placeholder { color: var(--faint); }
+        .search-box input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+        .song-count { flex: none; color: var(--muted); font: 650 12px/1 ui-monospace, monospace; letter-spacing: 0.04em; }
+        .table-shell { overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-raised); box-shadow: var(--shadow); }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 17px 18px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+        th { color: var(--muted); background: var(--surface-soft); font: 700 10px/1.2 ui-monospace, monospace; letter-spacing: 0.12em; text-transform: uppercase; }
+        tbody tr { transition: background 0.16s; }
+        tbody tr:hover { background: color-mix(in srgb, var(--accent-soft) 42%, transparent); }
+        tbody tr:last-child td { border-bottom: 0; }
+        .song-title { margin-bottom: 2px; color: var(--ink); font-family: Georgia, "Noto Serif SC", serif; font-size: 17px; font-weight: 700; line-height: 1.25; }
+        .song-artist { margin-bottom: 8px; color: var(--muted); font-size: 12px; }
+        .song-path { max-width: 260px; overflow: hidden; color: var(--faint); font: 11px/1.5 ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+        .lrc-file { color: var(--accent-strong); font-size: 12px; font-weight: 700; word-break: break-word; }
+        .lrc-file.empty { color: var(--faint); font-style: italic; font-weight: 500; }
+        .no-lyrics { color: var(--faint); font-size: 12px; }
+        .lrc-preview { max-height: 82px; overflow: auto; padding: 9px 11px; border-left: 2px solid var(--line-strong); color: var(--muted); background: var(--surface-soft); font: 11px/1.5 ui-monospace, monospace; white-space: pre-wrap; }
+        .actions { display: flex; flex-wrap: wrap; gap: 7px; }
         .form-inline { display: inline; }
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; }
+        .btn { display: inline-flex; min-height: 34px; align-items: center; justify-content: center; padding: 7px 12px; border: 1px solid transparent; border-radius: 8px; font-size: 12px; font-weight: 700; text-decoration: none; cursor: pointer; transition: transform 0.16s, background 0.16s, border-color 0.16s, color 0.16s; }
+        .btn:hover { transform: translateY(-1px); }
+        .btn:active { transform: translateY(0); }
+        .btn-primary { color: var(--surface-raised); background: var(--accent-strong); }
+        .btn-secondary { color: var(--accent-strong); border-color: var(--accent); background: var(--accent-soft); }
+        .btn-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); background: transparent; }
+        .btn-ghost { color: var(--muted); border-color: var(--line-strong); background: transparent; }
+        .btn-compact { min-height: 30px; padding: 5px 10px; }
+        .badge { display: inline-flex; padding: 3px 7px; border: 1px solid currentColor; border-radius: 999px; font: 700 9px/1 ui-monospace, monospace; letter-spacing: 0.06em; text-transform: uppercase; }
+        .badge-mapped { color: var(--success); background: var(--success-soft); }
+        .badge-unmapped { color: var(--warning); background: var(--warning-soft); }
+        .empty-state { padding: 86px 24px; border: 1px solid var(--line); border-radius: 14px; color: var(--muted); background: var(--surface); text-align: center; box-shadow: var(--shadow); }
+        .empty-state::before { display: block; width: 54px; height: 54px; margin: 0 auto 20px; border: 1px solid var(--line-strong); border-radius: 50%; box-shadow: inset 0 0 0 8px var(--surface), inset 0 0 0 9px var(--line); content: ""; }
+        .modal { position: fixed; inset: 0; z-index: 1000; display: none; align-items: center; justify-content: center; padding: 20px; background: var(--overlay); backdrop-filter: blur(8px); }
         .modal.show { display: flex; }
-        .modal-content { background: white; padding: 24px; border-radius: 12px; width: 90%; max-width: 500px; max-height: 80vh; overflow: auto; }
-        .modal h2 { margin-top: 0; margin-bottom: 20px; }
-        .form-group { margin-bottom: 16px; }
-        .form-group label { display: block; margin-bottom: 6px; font-weight: 500; font-size: 14px; }
-        .form-group input, .form-group select { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
-        .form-group small { color: #999; font-size: 12px; margin-top: 4px; display: block; }
-        .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
-        .empty-state { text-align: center; padding: 60px 20px; color: #999; }
-        .empty-state .btn { margin-top: 16px; }
-        .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
-        .badge-mapped { background: #e8f5e9; color: #2e7d32; }
-        .badge-unmapped { background: #fff3e0; color: #e65100; }
-        .message { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
-        .message.success { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
-        .message.error { background: #ffebee; color: #c62828; border: 1px solid #ffcdd2; }
-        .loading-progress { position: fixed; top: 0; left: 0; width: 100%; height: 4px; z-index: 2000; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+        .modal-content { width: min(520px, 100%); max-height: min(82vh, 720px); overflow: auto; padding: 28px; border: 1px solid var(--line); border-radius: 16px; color: var(--ink); background: var(--surface-raised); box-shadow: var(--shadow); }
+        .modal h2 { margin: 0 0 24px; font-family: Georgia, "Noto Serif SC", serif; font-size: 25px; letter-spacing: -0.02em; }
+        .form-group { margin-bottom: 17px; }
+        .form-group label { display: block; margin-bottom: 7px; color: var(--muted); font-size: 11px; font-weight: 750; letter-spacing: 0.06em; text-transform: uppercase; }
+        .form-group input, .form-group select { width: 100%; min-height: 43px; padding: 9px 11px; border: 1px solid var(--line-strong); border-radius: 8px; outline: 0; color: var(--ink); background: var(--surface-soft); }
+        .form-group input:focus, .form-group select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+        .form-group small { display: block; margin-top: 6px; color: var(--faint); font-size: 11px; }
+        .modal-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 25px; }
+        .message { margin-bottom: 16px; padding: 11px 13px; border: 1px solid; border-radius: 8px; font-size: 12px; }
+        .message.success { color: var(--success); border-color: var(--success); background: var(--success-soft); }
+        .message.error { color: var(--danger); border-color: var(--danger); background: var(--danger-soft); }
+        .loading-progress { position: fixed; top: 0; left: 0; z-index: 2000; width: 100%; height: 3px; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
         .loading-progress.show { opacity: 1; }
-        .loading-progress-bar { width: 0; height: 100%; background: #4CAF50; box-shadow: 0 0 8px rgba(76, 175, 80, 0.65); transition: width 0.2s ease-out; }
-        .lrc-drop-zone { margin-top: 10px; padding: 18px; border: 2px dashed #b7c7b8; border-radius: 8px; background: #f8fbf8; color: #527054; text-align: center; cursor: pointer; transition: border-color 0.2s, background 0.2s, transform 0.2s; }
-        .lrc-drop-zone:hover, .lrc-drop-zone.dragging { border-color: #4CAF50; background: #edf8ee; transform: translateY(-1px); }
-        .lrc-drop-zone strong { display: block; margin-bottom: 2px; color: #2e6131; }
-        .lrc-drop-zone span { font-size: 12px; }
-        .drop-overlay { position: fixed; inset: 0; z-index: 1900; display: flex; align-items: center; justify-content: center; background: rgba(238, 248, 239, 0.94); opacity: 0; pointer-events: none; transition: opacity 0.15s; }
+        .loading-progress-bar { width: 0; height: 100%; background: var(--accent); box-shadow: 0 0 10px var(--accent); transition: width 0.2s ease-out; }
+        .lrc-drop-zone { margin-top: 11px; padding: 22px 16px; border: 1px dashed var(--line-strong); border-radius: 10px; color: var(--muted); background: var(--surface-soft); text-align: center; cursor: pointer; transition: border-color 0.2s, background 0.2s, transform 0.2s; }
+        .lrc-drop-zone:hover, .lrc-drop-zone.dragging { border-color: var(--accent); color: var(--accent-strong); background: var(--accent-soft); transform: translateY(-1px); }
+        .lrc-drop-zone strong { display: block; margin-bottom: 3px; color: var(--accent-strong); }
+        .lrc-drop-zone span { font-size: 11px; }
+        .drop-overlay { position: fixed; inset: 0; z-index: 1900; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--page-bg) 94%, transparent); opacity: 0; pointer-events: none; transition: opacity 0.15s; }
         .drop-overlay.show { opacity: 1; }
-        .drop-overlay-content { width: min(520px, 86vw); padding: 50px 24px; border: 3px dashed #4CAF50; border-radius: 18px; color: #28612c; text-align: center; font-size: 20px; font-weight: 600; }
-        .upload-message { position: fixed; top: 20px; left: 50%; z-index: 2100; max-width: min(520px, 90vw); padding: 10px 16px; border-radius: 8px; background: #2e7d32; color: white; box-shadow: 0 5px 18px rgba(0,0,0,0.18); opacity: 0; pointer-events: none; transform: translate(-50%, -12px); transition: opacity 0.2s, transform 0.2s; }
+        .drop-overlay-content { width: min(520px, 86vw); padding: 56px 24px; border: 2px dashed var(--accent); border-radius: 16px; color: var(--accent-strong); text-align: center; font-family: Georgia, "Noto Serif SC", serif; font-size: 21px; font-weight: 700; }
+        .upload-message { position: fixed; top: 18px; left: 50%; z-index: 2100; max-width: min(520px, 90vw); padding: 11px 16px; border: 1px solid var(--success); border-radius: 8px; color: var(--success); background: var(--success-soft); box-shadow: var(--shadow-small); opacity: 0; pointer-events: none; transform: translate(-50%, -12px); transition: opacity 0.2s, transform 0.2s; }
         .upload-message.show { opacity: 1; transform: translate(-50%, 0); }
-        .upload-message.error { background: #c62828; }
-        .language-form { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-bottom: 12px; color: #666; font-size: 13px; }
-        .language-form select { padding: 5px 8px; border: 1px solid #ddd; border-radius: 5px; background: white; }
+        .upload-message.error { color: var(--danger); border-color: var(--danger); background: var(--danger-soft); }
+        .column-song { width: 30%; }
+        .column-path { width: 20%; }
+        .column-lyric { width: 18%; }
+        .column-preview { width: 22%; }
+        .column-actions { width: 10%; }
+        :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        @media (max-width: 900px) {
+            .app-shell { width: min(100% - 28px, 900px); padding-top: 22px; }
+            .masthead { grid-template-columns: auto minmax(180px, 1fr) auto; gap: 10px; }
+            .brand-name { font-size: 25px; }
+            .brand-kicker, .control-label { display: none; }
+            .control-deck { gap: 3px; }
+            .control-group + .control-group { padding-left: 3px; }
+            th, td { padding: 14px 12px; }
+            .song-path { max-width: 180px; }
+        }
+        @media (max-width: 720px) {
+            .app-shell { width: min(100% - 20px, 680px); padding: 18px 0 36px; }
+            .masthead { grid-template-columns: 1fr auto; gap: 12px; }
+            .brand-kicker, .control-label { display: block; }
+            .control-deck { box-shadow: none; }
+            .directory-inline { grid-column: 1 / -1; grid-row: 2; }
+            .toolbar { align-items: stretch; flex-direction: column; }
+            .song-count { padding-left: 2px; }
+            .table-shell { overflow: visible; border: 0; background: transparent; box-shadow: none; }
+            table, tbody { display: block; }
+            thead { display: none; }
+            tbody { display: grid; gap: 12px; }
+            tbody tr { display: block; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-raised); box-shadow: var(--shadow-small); }
+            tbody tr:hover { background: var(--surface-raised); }
+            td { display: grid; grid-template-columns: 105px minmax(0, 1fr); gap: 12px; min-height: 44px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+            td::before { color: var(--faint); content: attr(data-label); font: 700 9px/1.4 ui-monospace, monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+            td:first-child { display: block; padding: 17px 14px; }
+            td:first-child::before { display: none; }
+            td:last-child { border-bottom: 0; }
+            .song-path { max-width: none; white-space: normal; overflow-wrap: anywhere; }
+            .actions { align-items: stretch; flex-direction: column; }
+            .actions .btn, .actions form, .actions form .btn { width: 100%; }
+            .modal { align-items: flex-end; padding: 0; }
+            .modal-content { width: 100%; max-height: 90vh; padding: 24px 18px; border-radius: 18px 18px 0 0; }
+        }
+        @media (max-width: 430px) {
+            .masthead { grid-template-columns: 1fr; }
+            .brand { justify-content: center; }
+            .control-deck { align-items: stretch; flex-direction: column; }
+            .control-group { justify-content: space-between; }
+            .control-group + .control-group { padding-top: 6px; padding-left: 0; border-top: 1px solid var(--line); border-left: 0; }
+            .control-group select { min-width: 145px; }
+            .directory-inline { grid-column: 1; grid-row: auto; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+        }
     </style>
 </head>
 <body>
@@ -77,34 +214,53 @@
     </div>
     <div class="upload-message" id="uploadMessage" role="status"></div>
 
-    <form class="language-form" action="/language" method="post">
-        <label for="languageSelect">{{ text.language }}</label>
-        <select id="languageSelect" name="language" onchange="this.form.submit()">
-            <option value="auto" {% if auto_selected %}selected{% endif %}>{{ text.language_auto_label }}</option>
-            <option value="en" {% if en_selected %}selected{% endif %}>{{ text.language_english }}</option>
-            <option value="zh-CN" {% if zh_cn_selected %}selected{% endif %}>{{ text.language_chinese }}</option>
-        </select>
-    </form>
-
-    {% if has_music_dir %}
-    <div class="music-dir-info">
-        <span>ctlyrics</span>
-        <span>{{ text.music_directory }}: {{ music_dir }}</span>
-        <button class="btn btn-ghost" style="padding: 6px 12px; font-size: 12px;" onclick="openSettingsModal()">{{ text.edit }}</button>
-    </div>
-    {% else %}
-    <div class="music-dir-info empty">
-        <span>ctlyrics</span>
-        <span>{{ text.not_configured }}</span>
-        <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px;" onclick="openSettingsModal()">{{ text.configure }}</button>
-    </div>
-    {% endif %}
+    <div class="app-shell">
+        <header class="masthead">
+            <div class="brand">
+                <span class="brand-mark" aria-hidden="true">CL</span>
+                <div>
+                    <strong class="brand-name">ctlyrics</strong>
+                    <span class="brand-kicker">CMUS / LRC ARCHIVE</span>
+                </div>
+            </div>
+            {% if has_music_dir %}
+            <div class="directory-inline">
+                <span class="directory-label">{{ text.music_directory }}</span>
+                <span class="directory-value" title="{{ music_dir }}">{{ music_dir }}</span>
+                <button type="button" class="btn btn-ghost btn-compact" onclick="openSettingsModal()">{{ text.edit }}</button>
+            </div>
+            {% else %}
+            <div class="directory-inline empty">
+                <span class="directory-label">{{ text.music_directory }}</span>
+                <span class="directory-value">{{ text.not_configured }}</span>
+                <button type="button" class="btn btn-primary btn-compact" onclick="openSettingsModal()">{{ text.configure }}</button>
+            </div>
+            {% endif %}
+            <div class="control-deck">
+                <form class="control-group" action="/language" method="post">
+                    <label class="control-label" for="languageSelect">{{ text.language }}</label>
+                    <select id="languageSelect" name="language" onchange="this.form.submit()">
+                        <option value="auto" {% if auto_selected %}selected{% endif %}>{{ text.language_auto_label }}</option>
+                        <option value="en" {% if en_selected %}selected{% endif %}>{{ text.language_english }}</option>
+                        <option value="zh-CN" {% if zh_cn_selected %}selected{% endif %}>{{ text.language_chinese }}</option>
+                    </select>
+                </form>
+                <div class="control-group">
+                    <label class="control-label" for="themeSelect">{{ text.theme }}</label>
+                    <select id="themeSelect" aria-label="{{ text.theme_switch_label }}">
+                        <option value="auto">{{ text.theme_auto }}</option>
+                        <option value="light">{{ text.theme_light }}</option>
+                        <option value="dark">{{ text.theme_dark }}</option>
+                    </select>
+                </div>
+            </div>
+        </header>
 
     <div class="toolbar">
         <form class="search-box" method="get" action="/">
             <input type="search" name="q" placeholder="{{ text.search_placeholder }}" value="{{ search }}">
         </form>
-        <span style="color: #999; font-size: 14px;">{{ songs.len() }} {{ text.song_count }}</span>
+        <span class="song-count">{{ songs.len() }} {{ text.song_count }}</span>
     </div>
 
     {% if songs.len() == 0 %}
@@ -116,51 +272,52 @@
         {% endif %}
     </div>
     {% else %}
+    <div class="table-shell">
     <table>
         <thead>
             <tr>
-                <th style="width: 30%;">{{ text.song }}</th>
-                <th style="width: 20%;">{{ text.file_path }}</th>
-                <th style="width: 18%;">{{ text.lyric_file }}</th>
-                <th style="width: 22%;">{{ text.lyric_preview }}</th>
-                <th style="width: 10%;">{{ text.actions }}</th>
+                <th class="column-song">{{ text.song }}</th>
+                <th class="column-path">{{ text.file_path }}</th>
+                <th class="column-lyric">{{ text.lyric_file }}</th>
+                <th class="column-preview">{{ text.lyric_preview }}</th>
+                <th class="column-actions">{{ text.actions }}</th>
             </tr>
         </thead>
         <tbody>
             {% for row in songs %}
             <tr>
-                <td>
+                <td data-label="{{ text.song }}">
                     <div class="song-title">{{ row.song.title }}</div>
                     <div class="song-artist">{{ row.song.artist }}</div>
                     <span class="badge {% if row.has_lrc_filename %}badge-mapped{% else %}badge-unmapped{% endif %}">
                         {% if row.has_lrc_filename %}{{ text.mapped }}{% else %}{{ text.unmapped }}{% endif %}
                     </span>
                 </td>
-                <td class="song-path" title="{{ row.song.path }}">{{ row.song.path }}</td>
-                <td>
+                <td class="song-path" data-label="{{ text.file_path }}" title="{{ row.song.path }}">{{ row.song.path }}</td>
+                <td data-label="{{ text.lyric_file }}">
                     {% if row.has_lrc_filename %}
                     <div class="lrc-file">{{ row.lrc_filename }}</div>
                     {% else %}
                     <div class="lrc-file empty">{{ text.unmapped }}</div>
                     {% endif %}
                 </td>
-                <td>
+                <td data-label="{{ text.lyric_preview }}">
                     {% if row.has_lrc_preview %}
                     <div class="lrc-preview">{{ row.lrc_preview }}</div>
                     {% else %}
-                    <span style="color: #ccc;">{{ text.no_lyrics }}</span>
+                    <span class="no-lyrics">{{ text.no_lyrics }}</span>
                     {% endif %}
                 </td>
-                <td>
+                <td data-label="{{ text.actions }}">
                     <div class="actions">
                         {% if row.has_lrc_filename %}
                         <form action="/unmap" method="post" class="form-inline" onsubmit="return confirm('{{ text.confirm_unmap }}')">
                             <input type="hidden" name="song_path" value="{{ row.song.path }}">
-                            <button type="submit" class="btn btn-danger" style="padding: 6px 12px; font-size: 12px;">{{ text.remove_mapping }}</button>
+                            <button type="submit" class="btn btn-danger btn-compact">{{ text.remove_mapping }}</button>
                         </form>
-                        <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="openMapModal('{{ row.song.path }}', '{{ row.song.title }}', '{{ row.song.artist }}', '{{ row.lrc_filename }}')">{{ text.edit_mapping }}</button>
+                        <button class="btn btn-secondary btn-compact" onclick="openMapModal('{{ row.song.path }}', '{{ row.song.title }}', '{{ row.song.artist }}', '{{ row.lrc_filename }}')">{{ text.edit_mapping }}</button>
                         {% else %}
-                        <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px;" onclick="openMapModal('{{ row.song.path }}', '{{ row.song.title }}', '{{ row.song.artist }}', '')">{{ text.add_mapping }}</button>
+                        <button class="btn btn-primary btn-compact" onclick="openMapModal('{{ row.song.path }}', '{{ row.song.title }}', '{{ row.song.artist }}', '')">{{ text.add_mapping }}</button>
                         {% endif %}
                     </div>
                 </td>
@@ -168,6 +325,7 @@
             {% endfor %}
         </tbody>
     </table>
+    </div>
     {% endif %}
 
     <!-- Map Modal -->
@@ -224,12 +382,36 @@
             </form>
         </div>
     </div>
+    </div>
 
     <script>
         window.ctlyricsText = {{ client_text_json|safe }};
         var loadingProgressTimer;
         var uploadMessageTimer;
         var documentDragDepth = 0;
+        var themeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+        var themeSelect = document.getElementById('themeSelect');
+
+        function applyTheme(preference, persist = true) {
+            const selected = ['auto', 'light', 'dark'].includes(preference) ? preference : 'auto';
+            const resolved = selected === 'auto' ? (themeMediaQuery.matches ? 'dark' : 'light') : selected;
+            document.documentElement.dataset.themePreference = selected;
+            document.documentElement.dataset.theme = resolved;
+            themeSelect.value = selected;
+            if (persist) {
+                try {
+                    localStorage.setItem('ctlyrics-theme', selected);
+                } catch (_) {}
+            }
+        }
+
+        themeSelect.addEventListener('change', () => applyTheme(themeSelect.value));
+        themeMediaQuery.addEventListener('change', () => {
+            if (document.documentElement.dataset.themePreference === 'auto') {
+                applyTheme('auto', false);
+            }
+        });
+        applyTheme(document.documentElement.dataset.themePreference || 'auto', false);
 
         function startLoadingProgress() {
             const progress = document.getElementById('loadingProgress');

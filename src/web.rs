@@ -73,6 +73,11 @@ struct WebText {
     language_auto_label: &'static str,
     language_english: &'static str,
     language_chinese: &'static str,
+    theme: &'static str,
+    theme_auto: &'static str,
+    theme_light: &'static str,
+    theme_dark: &'static str,
+    theme_switch_label: &'static str,
 }
 
 impl WebText {
@@ -116,6 +121,11 @@ impl WebText {
             language_auto_label: tr(locale, "language_auto_label"),
             language_english: tr(locale, "language_english"),
             language_chinese: tr(locale, "language_chinese"),
+            theme: tr(locale, "theme"),
+            theme_auto: tr(locale, "theme_auto"),
+            theme_light: tr(locale, "theme_light"),
+            theme_dark: tr(locale, "theme_dark"),
+            theme_switch_label: tr(locale, "theme_switch_label"),
         }
     }
 }
