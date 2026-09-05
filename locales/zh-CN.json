@@ -16,6 +16,7 @@
   "status_paused": "已暂停",
   "status_stopped": "已停止",
   "status_unknown": "未知状态",
+  "control_failed": "播放控制失败：{error}",
   "browser_open_failed": "无法打开浏览器：{error}",
   "browser_opened": "已打开 http://localhost:3000",
   "web_starting": "正在启动 Web 服务...",

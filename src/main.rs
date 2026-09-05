@@ -180,6 +180,7 @@ fn run_tui(locale: Locale) -> Result<()> {
                         break;
                     }
                 }
+                Event::Mouse(mouse) => player.handle_mouse(mouse),
                 Event::Resize(_, _) => {
                     terminal.autoresize()?;
                     terminal.clear()?;

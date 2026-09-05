@@ -89,10 +89,21 @@ Select the interface language:
 | Key | Action |
 |---|---|
 | `q` | Quit |
+| `Space` | Play / pause |
+| `n` | Next track |
+| `p` | Previous track |
+| `s` | Stop playback |
 | `Left` / `Right` | Adjust lyric offset by `-0.1s` / `+0.1s` |
 | `Up` / `Down` | Adjust lyric offset by `-0.5s` / `+0.5s` |
 | `:` | Enter command mode |
 | `Esc` | Leave command mode |
+| `:` (in command mode) | Clear the command and return to Normal mode |
+
+The persistent player bar at the bottom shows the title, progress, time, and previous, play/pause, and next icons. All three playback icons support left-click control, and clicking the progress bar seeks directly to the corresponding position. Titles wider than the available area scroll back and forth automatically.
+
+Command output replaces the player bar for one second before the player returns automatically. While entering a command, the same row becomes the `:` input line.
+
+The controls use the Unicode text symbols `⏮︎`, `⏸︎`, `▶︎`, and `⏭︎` without a background color. The TUI uses the font configured by the terminal emulator and cannot load a bundled font itself, so use a terminal font that contains these glyphs for consistent rendering across devices.
 
 ### Command Mode
 

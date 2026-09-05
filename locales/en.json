@@ -16,6 +16,7 @@
   "status_paused": "paused",
   "status_stopped": "stopped",
   "status_unknown": "unknown",
+  "control_failed": "Playback control failed: {error}",
   "browser_open_failed": "Failed to open browser: {error}",
   "browser_opened": "Opened http://localhost:3000",
   "web_starting": "Starting web server...",
