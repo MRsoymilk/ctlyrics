@@ -237,7 +237,12 @@ fn run_tray(
             .border_pixel(white)
             .override_redirect(1)
             .save_under(1)
-            .event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS),
+            .event_mask(
+                EventMask::EXPOSURE
+                    | EventMask::BUTTON_PRESS
+                    | EventMask::POINTER_MOTION
+                    | EventMask::LEAVE_WINDOW,
+            ),
     )?;
 
     let icon_gc = connection.generate_id()?;
@@ -286,6 +291,7 @@ fn run_tray(
     let mut icon_width = ICON_SIZE;
     let mut icon_height = ICON_SIZE;
     let mut menu_open = false;
+    let mut quit_hovered = false;
     let mut menu_opened_at = Instant::now();
 
     while !stop.is_requested() && !exit.is_requested() {
@@ -326,6 +332,7 @@ fn run_tray(
                         menu_content.as_ref(),
                         &playback_snapshot.line,
                         menu_opened_at.elapsed(),
+                        quit_hovered,
                     )?;
                 }
                 Event::ConfigureNotify(event) if event.window == icon => {
@@ -352,6 +359,7 @@ fn run_tray(
                         menu_content.as_ref(),
                         &playback_snapshot.line,
                         menu_opened_at.elapsed(),
+                        false,
                     )?;
                     open_menu(
                         &connection,
@@ -363,14 +371,21 @@ fn run_tray(
                     )?;
                     menu_open = true;
                 }
+                Event::MotionNotify(event) if menu_open => {
+                    quit_hovered = is_quit_row(event.event_x, event.event_y);
+                }
+                Event::LeaveNotify(_) if menu_open => {
+                    quit_hovered = false;
+                }
                 Event::ButtonPress(event) if menu_open => {
                     let inside = event.event_x >= 0
                         && event.event_y >= 0
                         && event.event_x < MENU_WIDTH as i16
                         && event.event_y < MENU_HEIGHT as i16;
-                    let quit_clicked = event.event_y >= INFO_HEIGHT as i16;
+                    let quit_clicked = is_quit_row(event.event_x, event.event_y);
                     close_menu(&connection, menu)?;
                     menu_open = false;
+                    quit_hovered = false;
                     if event.detail == 1 && inside && quit_clicked {
                         exit.request();
                     }
@@ -398,6 +413,7 @@ fn run_tray(
                 menu_content.as_ref(),
                 &playback_snapshot.line,
                 menu_opened_at.elapsed(),
+                quit_hovered,
             )?;
         }
         thread::sleep(Duration::from_millis(20));
@@ -503,9 +519,10 @@ fn draw_menu(
     content: Option<&MenuContent>,
     playback: &str,
     elapsed: Duration,
+    quit_hovered: bool,
 ) -> Result<()> {
     if let Some(content) = content {
-        let rgba = render_menu(content, elapsed);
+        let rgba = render_menu(content, elapsed, quit_hovered);
         let image = native_x11_pixels(&rgba, MENU_WIDTH, MENU_HEIGHT, format)?;
         connection.put_image(
             ImageFormat::Z_PIXMAP,
@@ -545,6 +562,19 @@ fn draw_menu(
         .collect();
     let fallback = fallback.trim().as_bytes();
     connection.image_text8(window, gc, 12, 19, &fallback[..fallback.len().min(54)])?;
+    if quit_hovered {
+        connection.poly_fill_rectangle(
+            window,
+            gc,
+            &[Rectangle {
+                x: 0,
+                y: INFO_HEIGHT as i16,
+                width: MENU_WIDTH,
+                height: MENU_HEIGHT - INFO_HEIGHT,
+            }],
+        )?;
+        connection.change_gc(gc, &ChangeGCAux::new().foreground(black).background(white))?;
+    }
     connection.image_text8(window, gc, 12, 49, b"Quit")?;
     connection.flush()?;
     Ok(())
@@ -595,7 +625,7 @@ fn font_supports(font: &Font, text: &str) -> bool {
         .all(|character| font.lookup_glyph_index(character) != 0)
 }
 
-fn render_menu(content: &MenuContent, elapsed: Duration) -> Vec<u8> {
+fn render_menu(content: &MenuContent, elapsed: Duration, quit_hovered: bool) -> Vec<u8> {
     let mut pixels = vec![0; usize::from(MENU_WIDTH) * usize::from(MENU_HEIGHT) * 4];
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel[3] = 255;
@@ -615,6 +645,14 @@ fn render_menu(content: &MenuContent, elapsed: Duration) -> Vec<u8> {
         let offset = separator + x * 4;
         pixels[offset..offset + 3].copy_from_slice(&[70, 70, 70]);
     }
+    if quit_hovered {
+        for y in usize::from(INFO_HEIGHT + 1)..usize::from(MENU_HEIGHT) {
+            for x in 0..usize::from(MENU_WIDTH) {
+                let offset = (y * usize::from(MENU_WIDTH) + x) * 4;
+                pixels[offset..offset + 3].copy_from_slice(&[29, 96, 72]);
+            }
+        }
+    }
     blit_text(
         &mut pixels,
         &content.quit,
@@ -623,6 +661,10 @@ fn render_menu(content: &MenuContent, elapsed: Duration) -> Vec<u8> {
         [255, 255, 255],
     );
     pixels
+}
+
+fn is_quit_row(x: i16, y: i16) -> bool {
+    x >= 0 && x < MENU_WIDTH as i16 && y >= INFO_HEIGHT as i16 && y < MENU_HEIGHT as i16
 }
 
 fn rasterize_text(font: &Font, text: &str) -> RasterizedText {
@@ -734,7 +776,9 @@ fn blit_column(
         let offset =
             (destination_y as usize * usize::from(MENU_WIDTH) + destination_x as usize) * 4;
         for channel in 0..3 {
-            pixels[offset + channel] = (u16::from(color[channel]) * alpha / 255) as u8;
+            let background = u16::from(pixels[offset + channel]);
+            pixels[offset + channel] =
+                ((u16::from(color[channel]) * alpha + background * (255 - alpha)) / 255) as u8;
         }
     }
 }
@@ -761,7 +805,7 @@ fn open_menu(
         .grab_pointer(
             false,
             menu,
-            EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE,
+            EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION,
             GrabMode::ASYNC,
             GrabMode::ASYNC,
             x11rb::NONE,
