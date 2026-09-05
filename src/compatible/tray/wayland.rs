@@ -41,7 +41,7 @@ use smithay_client_toolkit::{
     },
 };
 
-use super::xembed::{LyricBubbleContent, LyricOrientation, load_menu_font, render_lyric_bubble};
+use super::bubble::{LyricBubbleContent, LyricOrientation, load_font, render_lyric_bubble};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(40);
 const DRAG_THRESHOLD: f64 = 4.0;
@@ -259,7 +259,7 @@ fn initialize(
         return Err(anyhow!("neither layer shell nor xdg shell is available"));
     }
     let shm = Shm::bind(&globals, &qh)?;
-    let font = load_menu_font(&initial_lyric).context("no usable lyric font")?;
+    let font = load_font(&initial_lyric).context("no usable lyric font")?;
     let content = Some(LyricBubbleContent::new(&font, &initial_lyric));
     let pool = SlotPool::new(4096, &shm)?;
     let state = State {
@@ -330,7 +330,7 @@ impl State {
     }
 
     fn rebuild_content(&mut self) {
-        self.content = load_menu_font(&self.lyric)
+        self.content = load_font(&self.lyric)
             .as_ref()
             .map(|font| LyricBubbleContent::new(font, &self.lyric));
     }
