@@ -1,5 +1,4 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use open;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
@@ -7,17 +6,12 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 use std::time::{Duration, Instant};
-use tokio;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::cmus::{PlaybackCommand, control_cmus, seek_cmus};
 use crate::i18n::{Locale, format as tr_format, preferred_locale, set_preference, tr};
 use crate::lyrics_cache::{LyricLine, current_lyric_index};
-
-static WEB_SERVER_STARTED: AtomicBool = AtomicBool::new(false);
 
 pub struct Player {
     pub offset: f64,
@@ -185,10 +179,7 @@ impl Player {
         } else if cmd == "love" {
             self.show_message(tr(self.locale, "love_message").to_string());
         } else if cmd == "web" {
-            if !WEB_SERVER_STARTED.load(Ordering::SeqCst) {
-                self.start_web_server();
-            }
-            if let Err(e) = open::that("http://localhost:3000") {
+            if let Err(e) = crate::web::start_and_open() {
                 self.show_message(tr_format(
                     self.locale,
                     "browser_open_failed",
@@ -231,31 +222,6 @@ impl Player {
             ));
         }
         self.command_buffer.clear();
-    }
-
-    fn start_web_server(&mut self) {
-        thread::spawn(|| {
-            let Ok(rt) = tokio::runtime::Runtime::new() else {
-                tracing::error!("failed to create web server runtime");
-                return;
-            };
-            rt.block_on(async {
-                let app = crate::web::create_router();
-                let listener = match tokio::net::TcpListener::bind("0.0.0.0:3000").await {
-                    Ok(listener) => listener,
-                    Err(error) => {
-                        tracing::error!(%error, "failed to bind web server");
-                        return;
-                    }
-                };
-                tracing::info!("web server running at http://localhost:3000");
-                if let Err(error) = axum::serve(listener, app).await {
-                    tracing::error!(%error, "web server stopped");
-                }
-            });
-        });
-        WEB_SERVER_STARTED.store(true, Ordering::SeqCst);
-        self.show_message(tr(self.locale, "web_started").to_string());
     }
 
     pub fn draw(&mut self, frame: &mut Frame, info: &CmusInfo, lyrics: &[LyricLine]) {
@@ -603,8 +569,7 @@ impl Player {
         let end_line = (start_line + visible_lines).min(lyrics.len());
 
         let mut text = Vec::new();
-        for i in start_line..end_line {
-            let line = &lyrics[i];
+        for (i, line) in lyrics.iter().enumerate().take(end_line).skip(start_line) {
             let style = if i == current_line {
                 Style::default()
                     .fg(Color::Green)

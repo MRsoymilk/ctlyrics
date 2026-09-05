@@ -76,15 +76,15 @@ impl LyricsCache {
 
         // Try mapping by music path first (most accurate)
         if let Some(ref store) = self.mapping_store {
-            if !music_path_str.is_empty() {
-                if let Some(mapping) = store.get_by_music_path(music_path_str) {
-                    let path = format!("lyrics/{}", mapping.lrc_filename);
-                    self.last_lyrics = parse_lrc(Path::new(&path));
-                    self.last_title = Some(title.to_string());
-                    self.last_artist = Some(artist_str.to_string());
-                    self.last_music_path = Some(music_path_str.to_string());
-                    return self.last_lyrics.clone();
-                }
+            if !music_path_str.is_empty()
+                && let Some(mapping) = store.get_by_music_path(music_path_str)
+            {
+                let path = format!("lyrics/{}", mapping.lrc_filename);
+                self.last_lyrics = parse_lrc(Path::new(&path));
+                self.last_title = Some(title.to_string());
+                self.last_artist = Some(artist_str.to_string());
+                self.last_music_path = Some(music_path_str.to_string());
+                return self.last_lyrics.clone();
             }
 
             // Fallback to title+artist matching

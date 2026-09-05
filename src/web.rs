@@ -15,8 +15,70 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
+use std::thread;
+use std::time::Duration;
 use tower_http::services::ServeDir;
+
+pub const WEB_URL: &str = "http://localhost:3000";
+
+static WEB_SERVER_STARTED: AtomicBool = AtomicBool::new(false);
+
+pub fn start_and_open() -> anyhow::Result<()> {
+    start_server_once();
+    open::that(WEB_URL)?;
+    Ok(())
+}
+
+fn start_server_once() {
+    if WEB_SERVER_STARTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    match thread::Builder::new()
+        .name("ctlyrics-web-server".to_string())
+        .spawn(move || {
+            let Ok(runtime) = tokio::runtime::Runtime::new() else {
+                tracing::error!("failed to create web server runtime");
+                WEB_SERVER_STARTED.store(false, Ordering::Release);
+                return;
+            };
+            runtime.block_on(async {
+                let listener = match tokio::net::TcpListener::bind("0.0.0.0:3000").await {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        tracing::error!(%error, "failed to bind web server");
+                        WEB_SERVER_STARTED.store(false, Ordering::Release);
+                        return;
+                    }
+                };
+                tracing::info!("web server running at {WEB_URL}");
+                let _ = ready_tx.send(());
+                if let Err(error) = axum::serve(listener, create_router()).await {
+                    tracing::error!(%error, "web server stopped");
+                }
+                WEB_SERVER_STARTED.store(false, Ordering::Release);
+            });
+        }) {
+        Ok(_) => {
+            if ready_rx.recv_timeout(Duration::from_secs(2)).is_err() {
+                tracing::warn!("web server did not become ready before opening the browser");
+            }
+        }
+        Err(error) => {
+            WEB_SERVER_STARTED.store(false, Ordering::Release);
+            tracing::error!(%error, "failed to start web server thread");
+        }
+    }
+}
 
 #[derive(Template)]
 #[template(path = "index.html")]

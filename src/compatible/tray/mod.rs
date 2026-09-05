@@ -7,6 +7,8 @@ use crate::i18n::{Locale, tr};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[cfg(target_os = "linux")]
+mod bubble;
+#[cfg(target_os = "linux")]
 mod icon;
 #[cfg(target_os = "linux")]
 mod sni;
