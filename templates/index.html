@@ -75,8 +75,9 @@
         .app-shell { width: min(1380px, calc(100% - 48px)); margin: 0 auto; padding: 34px 0 56px; }
         .masthead { display: grid; grid-template-columns: auto minmax(220px, 1fr) auto; align-items: center; gap: 18px; margin-bottom: 24px; }
         .brand { display: flex; align-items: center; gap: 13px; }
-        .brand-mark { display: grid; place-items: center; width: 46px; height: 46px; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--surface-raised); background: var(--ink); font: 700 12px/1 ui-monospace, monospace; letter-spacing: 0.12em; box-shadow: inset 0 0 0 5px var(--ink), inset 0 0 0 6px color-mix(in srgb, var(--surface-raised) 25%, transparent); }
-        .brand-name { display: block; font-family: Georgia, "Noto Serif SC", serif; font-size: clamp(24px, 3vw, 34px); line-height: 1; letter-spacing: -0.035em; }
+        .brand-icon { display: block; width: 48px; height: 48px; object-fit: contain; }
+        .brand-wordmark { display: flex; align-items: center; padding: 4px 7px; }
+        .brand-name { display: block; width: 126px; height: auto; }
         .brand-kicker { display: block; margin-top: 5px; color: var(--muted); font: 600 10px/1.2 ui-monospace, monospace; letter-spacing: 0.18em; }
         .control-deck { display: flex; align-items: center; gap: 6px; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--surface-raised) 86%, transparent); box-shadow: var(--shadow-small); }
         .control-group { display: flex; align-items: center; gap: 7px; }
@@ -172,7 +173,7 @@
         @media (max-width: 900px) {
             .app-shell { width: min(100% - 28px, 900px); padding-top: 22px; }
             .masthead { grid-template-columns: auto minmax(180px, 1fr) auto; gap: 10px; }
-            .brand-name { font-size: 25px; }
+            .brand-name { width: 112px; }
             .brand-kicker, .control-label { display: none; }
             .control-deck { gap: 3px; }
             .control-group + .control-group { padding-left: 3px; }
@@ -234,9 +235,9 @@
     <div class="app-shell">
         <header class="masthead">
             <div class="brand">
-                <span class="brand-mark" aria-hidden="true">CL</span>
+                <img class="brand-icon" src="/assets/logo_icon.png" alt="">
                 <div>
-                    <strong class="brand-name">ctlyrics</strong>
+                    <span class="brand-wordmark"><img class="brand-name" src="/assets/logo_font.png" alt="ctlyrics"></span>
                     <span class="brand-kicker">CMUS / LRC ARCHIVE</span>
                 </div>
             </div>

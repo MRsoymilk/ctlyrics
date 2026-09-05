@@ -9,7 +9,7 @@ use axum::{
     extract::{DefaultBodyLimit, Form, Multipart, Path, Query, State},
     http::HeaderMap,
     http::StatusCode,
-    http::header::{ACCEPT_LANGUAGE, COOKIE, SET_COOKIE},
+    http::header::{ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_TYPE, COOKIE, SET_COOKIE},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
@@ -214,9 +214,31 @@ pub fn create_router() -> Router {
         .route("/unmap", post(remove_mapping))
         .route("/api/lrc/upload", post(upload_lrc))
         .route("/api/lrc/:filename", get(get_lrc_content))
+        .route("/assets/logo_icon.png", get(logo_icon))
+        .route("/assets/logo_font.png", get(logo_font))
         .nest_service("/static", ServeDir::new("static"))
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(store)
+}
+
+async fn logo_icon() -> impl IntoResponse {
+    (
+        [
+            (CONTENT_TYPE, "image/png"),
+            (CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_bytes!("../res/logo_icon.png").as_slice(),
+    )
+}
+
+async fn logo_font() -> impl IntoResponse {
+    (
+        [
+            (CONTENT_TYPE, "image/png"),
+            (CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_bytes!("../res/logo_font.png").as_slice(),
+    )
 }
 
 async fn index(
