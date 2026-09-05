@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ctlyrics::cmus::CmusInfo;
 use ctlyrics::i18n::Locale;
+use ctlyrics::lyrics_cache::{LyricLine, current_lyric_index, current_lyric_line};
 use ctlyrics::player::Player;
 use ratatui::{Terminal, backend::TestBackend};
 use std::thread;
@@ -26,6 +27,25 @@ fn buffer_text(terminal: &Terminal<TestBackend>) -> String {
         .iter()
         .map(|cell| cell.symbol())
         .collect()
+}
+
+#[test]
+fn current_lyric_matches_lrc_timestamps() {
+    let lyrics = vec![
+        LyricLine {
+            timestamp: 10.0,
+            text: "first".to_string(),
+        },
+        LyricLine {
+            timestamp: 20.0,
+            text: "second".to_string(),
+        },
+    ];
+
+    assert_eq!(current_lyric_index(&lyrics, 5.0), Some(0));
+    assert_eq!(current_lyric_line(&lyrics, 19.9).unwrap().text, "first");
+    assert_eq!(current_lyric_line(&lyrics, 20.0).unwrap().text, "second");
+    assert!(current_lyric_line(&[], 20.0).is_none());
 }
 
 #[test]

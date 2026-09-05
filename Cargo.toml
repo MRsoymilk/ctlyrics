@@ -1,6 +1,6 @@
 [package]
 name = "ctlyrics"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.88"
 
@@ -32,4 +32,6 @@ open = "5"
 fontdue = "0.9"
 image = { version = "0.25", default-features = false, features = ["png"] }
 ksni = { version = "0.3", features = ["blocking"] }
+notify-rust = "4"
+smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop"] }
 x11rb = "0.13"

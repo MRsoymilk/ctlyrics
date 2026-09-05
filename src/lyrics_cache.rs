@@ -11,6 +11,20 @@ pub struct LyricLine {
     pub text: String,
 }
 
+pub fn current_lyric_line(lyrics: &[LyricLine], position: f64) -> Option<&LyricLine> {
+    current_lyric_index(lyrics, position).map(|index| &lyrics[index])
+}
+
+pub fn current_lyric_index(lyrics: &[LyricLine], position: f64) -> Option<usize> {
+    lyrics
+        .iter()
+        .enumerate()
+        .take_while(|(_, line)| position >= line.timestamp)
+        .last()
+        .map(|(index, _)| index)
+        .or((!lyrics.is_empty()).then_some(0))
+}
+
 pub struct LyricsCache {
     last_title: Option<String>,
     last_artist: Option<String>,

@@ -1,5 +1,7 @@
 use ctlyrics::{
-    compatible::tray::{ExitSignal, marquee_text, playback_line},
+    compatible::tray::{
+        ExitSignal, marquee_text, playback_line, progress_offset, seek_from_progress,
+    },
     i18n::Locale,
 };
 
@@ -11,6 +13,15 @@ fn exit_signal_is_shared_between_tray_and_tui() {
     assert!(!tui_signal.is_requested());
     tray_signal.request();
     assert!(tui_signal.is_requested());
+}
+
+#[test]
+fn tray_progress_scales_and_seeks_within_bounds() {
+    assert_eq!(progress_offset(30, 120, 200), 50);
+    assert_eq!(progress_offset(150, 120, 200), 200);
+    assert_eq!(progress_offset(30, 0, 200), 0);
+    assert_eq!(seek_from_progress(50, 200, 120), 30);
+    assert_eq!(seek_from_progress(250, 200, 120), 120);
 }
 
 #[test]
