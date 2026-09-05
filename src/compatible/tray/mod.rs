@@ -11,6 +11,8 @@ mod icon;
 #[cfg(target_os = "linux")]
 mod sni;
 #[cfg(target_os = "linux")]
+mod wayland;
+#[cfg(target_os = "linux")]
 mod xembed;
 
 #[derive(Clone, Default)]

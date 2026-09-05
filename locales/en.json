@@ -71,7 +71,7 @@
   "help_mouse_tray": "Tray right-click",
   "help_mouse_tray_quit": "Show progress, control playback, or quit ctlyrics",
   "help_mouse_tray_left": "Tray left-click",
-  "help_mouse_tray_lyric": "Show or hide the current lyric bubble",
+  "help_mouse_tray_lyric": "Show/hide the lyric bubble; drag it to move",
   "help_mouse_tray_wheel": "Wheel over tray/bubble",
   "help_mouse_tray_orientation": "Switch horizontal or vertical lyric display",
   "help_footer": "↑/↓ j/k scroll  PgUp/PgDn page  Esc/h/? close  q quit",

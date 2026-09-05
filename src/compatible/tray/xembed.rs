@@ -58,6 +58,7 @@ const BUBBLE_PADDING: usize = 14;
 const BUBBLE_MAX_WIDTH: u16 = 520;
 const BUBBLE_MARGIN: i32 = 10;
 const BUBBLE_FRAME_INTERVAL: Duration = Duration::from_millis(40);
+const BUBBLE_DRAG_THRESHOLD: i16 = 4;
 
 #[derive(Clone, Copy)]
 struct PixelFormat {
@@ -76,7 +77,7 @@ struct RasterizedText {
     alpha: Vec<u8>,
 }
 
-struct LyricBubbleContent {
+pub(super) struct LyricBubbleContent {
     horizontal: RasterizedText,
     vertical: RasterizedText,
 }
@@ -95,9 +96,21 @@ enum MenuTarget {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum LyricOrientation {
+pub(super) enum LyricOrientation {
     Horizontal,
     Vertical,
+}
+
+#[derive(Clone, Copy)]
+enum BubblePlacement {
+    Tray((i16, i16)),
+    Fixed((i32, i32)),
+}
+
+struct BubbleDrag {
+    pointer_start: (i16, i16),
+    position_start: (i32, i32),
+    started: bool,
 }
 
 impl MenuContent {
@@ -110,7 +123,7 @@ impl MenuContent {
 }
 
 impl LyricBubbleContent {
-    fn new(font: &Font, text: &str) -> Self {
+    pub(super) fn new(font: &Font, text: &str) -> Self {
         Self {
             horizontal: rasterize_text(font, text),
             vertical: rasterize_vertical_text(font, text),
@@ -298,7 +311,12 @@ fn run_tray(
             .border_pixel(black)
             .override_redirect(1)
             .save_under(1)
-            .event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS),
+            .event_mask(
+                EventMask::EXPOSURE
+                    | EventMask::BUTTON_PRESS
+                    | EventMask::BUTTON_RELEASE
+                    | EventMask::POINTER_MOTION,
+            ),
     )?;
     connection.change_property32(
         PropMode::REPLACE,
@@ -415,7 +433,10 @@ fn run_tray(
     let mut menu_opened_at = Instant::now();
     let mut bubble_visible = false;
     let mut bubble_orientation = LyricOrientation::Horizontal;
-    let mut bubble_anchor = (0_i16, 0_i16);
+    let mut bubble_placement = BubblePlacement::Tray((0, 0));
+    let mut bubble_position = (0_i32, 0_i32);
+    let mut bubble_size = (1_u16, 1_u16);
+    let mut bubble_drag: Option<BubbleDrag> = None;
     let mut bubble_started_at = Instant::now();
     let mut last_bubble_draw = Instant::now();
     let mut last_left_click = None;
@@ -493,11 +514,15 @@ fn run_tray(
                         if bubble_visible {
                             hide_bubble(&connection, bubble)?;
                             bubble_visible = false;
+                            bubble_drag = None;
                         } else {
-                            bubble_anchor = (event.root_x, event.root_y);
+                            if matches!(bubble_placement, BubblePlacement::Tray(_)) {
+                                bubble_placement =
+                                    BubblePlacement::Tray((event.root_x, event.root_y));
+                            }
                             bubble_started_at = Instant::now();
                             if let Some(text) = bubble_text.as_ref() {
-                                draw_lyric_bubble(
+                                let (x, y, width, height) = draw_lyric_bubble(
                                     &connection,
                                     bubble,
                                     bubble_gc,
@@ -505,10 +530,12 @@ fn run_tray(
                                     text,
                                     bubble_orientation,
                                     bubble_started_at.elapsed(),
-                                    bubble_anchor,
+                                    bubble_placement,
                                     screen.width_in_pixels,
                                     screen.height_in_pixels,
                                 )?;
+                                bubble_position = (x, y);
+                                bubble_size = (width, height);
                             }
                             connection.map_window(bubble)?;
                             connection.flush()?;
@@ -517,8 +544,46 @@ fn run_tray(
                     }
                 }
                 Event::ButtonPress(event) if event.event == bubble && event.detail == 1 => {
-                    hide_bubble(&connection, bubble)?;
-                    bubble_visible = false;
+                    bubble_drag = Some(BubbleDrag {
+                        pointer_start: (event.root_x, event.root_y),
+                        position_start: bubble_position,
+                        started: false,
+                    });
+                }
+                Event::MotionNotify(event) if event.event == bubble && bubble_drag.is_some() => {
+                    let drag = bubble_drag.as_mut().expect("checked above");
+                    let delta = (
+                        i32::from(event.root_x) - i32::from(drag.pointer_start.0),
+                        i32::from(event.root_y) - i32::from(drag.pointer_start.1),
+                    );
+                    if drag.started
+                        || delta.0.abs().max(delta.1.abs()) >= i32::from(BUBBLE_DRAG_THRESHOLD)
+                    {
+                        drag.started = true;
+                        bubble_position = clamp_bubble_position(
+                            (
+                                drag.position_start.0 + delta.0,
+                                drag.position_start.1 + delta.1,
+                            ),
+                            bubble_size,
+                            (screen.width_in_pixels, screen.height_in_pixels),
+                        );
+                        bubble_placement = BubblePlacement::Fixed(bubble_position);
+                        connection.configure_window(
+                            bubble,
+                            &ConfigureWindowAux::new()
+                                .x(bubble_position.0)
+                                .y(bubble_position.1)
+                                .stack_mode(StackMode::ABOVE),
+                        )?;
+                        connection.flush()?;
+                    }
+                }
+                Event::ButtonRelease(event) if event.event == bubble && event.detail == 1 => {
+                    if bubble_drag.take().is_some_and(|drag| !drag.started) {
+                        hide_bubble(&connection, bubble)?;
+                        bubble_visible = false;
+                    }
                 }
                 Event::ButtonPress(event)
                     if (event.event == icon || event.event == bubble)
@@ -535,6 +600,7 @@ fn run_tray(
                     if bubble_visible {
                         hide_bubble(&connection, bubble)?;
                         bubble_visible = false;
+                        bubble_drag = None;
                     }
                     menu_opened_at = Instant::now();
                     draw_menu(
@@ -633,7 +699,7 @@ fn run_tray(
         }
         if bubble_visible && last_bubble_draw.elapsed() >= BUBBLE_FRAME_INTERVAL {
             if let Some(text) = bubble_text.as_ref() {
-                draw_lyric_bubble(
+                let (x, y, width, height) = draw_lyric_bubble(
                     &connection,
                     bubble,
                     bubble_gc,
@@ -641,10 +707,12 @@ fn run_tray(
                     text,
                     bubble_orientation,
                     bubble_started_at.elapsed(),
-                    bubble_anchor,
+                    bubble_placement,
                     screen.width_in_pixels,
                     screen.height_in_pixels,
                 )?;
+                bubble_position = (x, y);
+                bubble_size = (width, height);
             }
             last_bubble_draw = Instant::now();
         }
@@ -700,20 +768,13 @@ fn draw_lyric_bubble(
     content: &LyricBubbleContent,
     orientation: LyricOrientation,
     elapsed: Duration,
-    anchor: (i16, i16),
+    placement: BubblePlacement,
     screen_width: u16,
     screen_height: u16,
-) -> Result<()> {
+) -> Result<(i32, i32, u16, u16)> {
     let (rgba, width, height) =
         render_lyric_bubble(content, orientation, elapsed, screen_width, screen_height);
-    let max_x = i32::from(screen_width.saturating_sub(width));
-    let max_y = i32::from(screen_height.saturating_sub(height));
-    let x = (i32::from(anchor.0) - i32::from(width) / 2).clamp(0, max_x);
-    let y = if i32::from(anchor.1) < i32::from(screen_height) / 2 {
-        (i32::from(anchor.1) + i32::from(ICON_SIZE) + BUBBLE_MARGIN).clamp(0, max_y)
-    } else {
-        (i32::from(anchor.1) - i32::from(height) - BUBBLE_MARGIN).clamp(0, max_y)
-    };
+    let (x, y) = bubble_position(placement, (width, height), (screen_width, screen_height));
     connection.configure_window(
         window,
         &ConfigureWindowAux::new()
@@ -737,10 +798,46 @@ fn draw_lyric_bubble(
         &image,
     )?;
     connection.flush()?;
-    Ok(())
+    Ok((x, y, width, height))
 }
 
-fn render_lyric_bubble(
+fn bubble_position(
+    placement: BubblePlacement,
+    bubble_size: (u16, u16),
+    screen_size: (u16, u16),
+) -> (i32, i32) {
+    match placement {
+        BubblePlacement::Tray(anchor) => {
+            let x = i32::from(anchor.0) - i32::from(bubble_size.0) / 2;
+            let y = if i32::from(anchor.1) < i32::from(screen_size.1) / 2 {
+                i32::from(anchor.1) + i32::from(ICON_SIZE) + BUBBLE_MARGIN
+            } else {
+                i32::from(anchor.1) - i32::from(bubble_size.1) - BUBBLE_MARGIN
+            };
+            clamp_bubble_position((x, y), bubble_size, screen_size)
+        }
+        BubblePlacement::Fixed(position) => {
+            clamp_bubble_position(position, bubble_size, screen_size)
+        }
+    }
+}
+
+fn clamp_bubble_position(
+    position: (i32, i32),
+    bubble_size: (u16, u16),
+    screen_size: (u16, u16),
+) -> (i32, i32) {
+    (
+        position
+            .0
+            .clamp(0, i32::from(screen_size.0.saturating_sub(bubble_size.0))),
+        position
+            .1
+            .clamp(0, i32::from(screen_size.1.saturating_sub(bubble_size.1))),
+    )
+}
+
+pub(super) fn render_lyric_bubble(
     content: &LyricBubbleContent,
     orientation: LyricOrientation,
     elapsed: Duration,
@@ -1051,7 +1148,7 @@ fn draw_menu(
     Ok(())
 }
 
-fn load_menu_font(sample: &str) -> Option<Font> {
+pub(super) fn load_menu_font(sample: &str) -> Option<Font> {
     let pattern = sample
         .chars()
         .find(|character| !character.is_ascii() && !character.is_whitespace())
@@ -1621,5 +1718,13 @@ mod tests {
         assert_eq!(pixel(16, 16), &[245, 245, 245]);
         assert_eq!(pixel(16, 14), &[0, 0, 0]);
         assert_eq!(pixel(15, 16), &[0, 0, 0]);
+    }
+
+    #[test]
+    fn dragged_bubble_position_stays_inside_the_screen() {
+        assert_eq!(
+            bubble_position(BubblePlacement::Fixed((-20, 900)), (120, 80), (800, 600),),
+            (0, 520)
+        );
     }
 }

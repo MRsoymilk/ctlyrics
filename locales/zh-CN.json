@@ -71,7 +71,7 @@
   "help_mouse_tray": "右键托盘图标",
   "help_mouse_tray_quit": "查看进度、控制播放或关闭 ctlyrics",
   "help_mouse_tray_left": "左键托盘图标",
-  "help_mouse_tray_lyric": "显示或隐藏当前歌词气泡",
+  "help_mouse_tray_lyric": "显示/隐藏歌词气泡；拖动气泡可移动位置",
   "help_mouse_tray_wheel": "在托盘/气泡上滚轮",
   "help_mouse_tray_orientation": "切换歌词横向或纵向显示",
   "help_footer": "↑/↓ j/k 滚动  PgUp/PgDn 翻页  Esc/h/? 返回  q 退出",

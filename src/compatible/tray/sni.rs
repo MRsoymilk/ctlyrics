@@ -13,6 +13,7 @@ use notify_rust::{Hint, Notification, NotificationHandle, Timeout};
 use crate::cmus::{PlaybackCommand, control_cmus};
 use crate::i18n::{Locale, tr};
 
+use super::wayland::{WaylandBubble, WaylandBubbleSender};
 use super::{ExitSignal, PlaybackInfo, icon::argb_icon, marquee_text, progress_offset};
 
 const MENU_COLUMNS: usize = 42;
@@ -27,7 +28,7 @@ struct TrayItem {
     locale: Locale,
     scroll_step: usize,
     scroll_active_until: Arc<AtomicU64>,
-    notification_commands: mpsc::Sender<NotificationCommand>,
+    lyric_display: LyricDisplaySender,
 }
 
 impl Tray for TrayItem {
@@ -47,11 +48,16 @@ impl Tray for TrayItem {
         }]
     }
 
-    fn activate(&mut self, _x: i32, _y: i32) {
+    fn activate(&mut self, x: i32, y: i32) {
+        let _ = (x, y);
         let lyric = self.playback.snapshot().lyric;
-        let _ = self
-            .notification_commands
-            .send(NotificationCommand::Toggle(lyric));
+        self.lyric_display.toggle(lyric);
+    }
+
+    fn scroll(&mut self, delta: i32, _orientation: ksni::Orientation) {
+        if delta != 0 {
+            self.lyric_display.set_vertical(delta < 0);
+        }
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
@@ -123,8 +129,7 @@ impl Tray for TrayItem {
 pub struct SniTray {
     commands: mpsc::Sender<Command>,
     thread: Option<JoinHandle<()>>,
-    notification_commands: mpsc::Sender<NotificationCommand>,
-    notification_thread: Option<JoinHandle<()>>,
+    lyric_display: Option<LyricDisplay>,
 }
 
 enum Command {
@@ -138,13 +143,127 @@ enum NotificationCommand {
     Shutdown,
 }
 
+#[derive(Clone)]
+enum LyricDisplaySender {
+    Wayland {
+        wayland: WaylandBubbleSender,
+        fallback: mpsc::Sender<NotificationCommand>,
+    },
+    Notification(mpsc::Sender<NotificationCommand>),
+}
+
+impl LyricDisplaySender {
+    fn toggle(&self, lyric: String) {
+        match self {
+            Self::Wayland { wayland, fallback } => {
+                if !wayland.toggle(lyric.clone()) {
+                    let _ = fallback.send(NotificationCommand::Toggle(lyric));
+                }
+            }
+            Self::Notification(sender) => {
+                let _ = sender.send(NotificationCommand::Toggle(lyric));
+            }
+        }
+    }
+
+    fn update(&self, lyric: String) {
+        match self {
+            Self::Wayland { wayland, fallback } => {
+                if !wayland.update(lyric.clone()) {
+                    let _ = fallback.send(NotificationCommand::Update(lyric));
+                }
+            }
+            Self::Notification(sender) => {
+                let _ = sender.send(NotificationCommand::Update(lyric));
+            }
+        }
+    }
+
+    fn set_vertical(&self, vertical: bool) {
+        if let Self::Wayland { wayland, .. } = self {
+            let _ = wayland.set_vertical(vertical);
+        }
+    }
+}
+
+enum LyricDisplay {
+    Wayland {
+        bubble: WaylandBubble,
+        fallback_sender: mpsc::Sender<NotificationCommand>,
+        fallback_thread: JoinHandle<()>,
+    },
+    Notification {
+        sender: mpsc::Sender<NotificationCommand>,
+        thread: JoinHandle<()>,
+    },
+}
+
+impl LyricDisplay {
+    fn start(initial_lyric: String) -> Result<Self> {
+        match WaylandBubble::start(initial_lyric) {
+            Ok(bubble) => {
+                tracing::info!("using Wayland lyric window");
+                let (fallback_sender, fallback_thread) = start_notification_thread()?;
+                Ok(Self::Wayland {
+                    bubble,
+                    fallback_sender,
+                    fallback_thread,
+                })
+            }
+            Err(error) => {
+                tracing::debug!(%error, "Wayland lyric window unavailable");
+                let (sender, thread) = start_notification_thread()?;
+                Ok(Self::Notification { sender, thread })
+            }
+        }
+    }
+
+    fn sender(&self) -> LyricDisplaySender {
+        match self {
+            Self::Wayland {
+                bubble,
+                fallback_sender,
+                ..
+            } => LyricDisplaySender::Wayland {
+                wayland: bubble.sender(),
+                fallback: fallback_sender.clone(),
+            },
+            Self::Notification { sender, .. } => LyricDisplaySender::Notification(sender.clone()),
+        }
+    }
+
+    fn shutdown(self) {
+        match self {
+            Self::Wayland {
+                bubble,
+                fallback_sender,
+                fallback_thread,
+            } => {
+                bubble.shutdown();
+                let _ = fallback_sender.send(NotificationCommand::Shutdown);
+                let _ = fallback_thread.join();
+            }
+            Self::Notification { sender, thread } => {
+                let _ = sender.send(NotificationCommand::Shutdown);
+                let _ = thread.join();
+            }
+        }
+    }
+}
+
+fn start_notification_thread() -> Result<(mpsc::Sender<NotificationCommand>, JoinHandle<()>)> {
+    let (sender, receiver) = mpsc::channel();
+    let thread = thread::Builder::new()
+        .name("ctlyrics-lyric-notification".to_string())
+        .spawn(move || run_notifications(receiver))
+        .context("failed to start lyric notification thread")?;
+    Ok((sender, thread))
+}
+
 impl SniTray {
     pub fn start(locale: Locale, exit: ExitSignal, playback: PlaybackInfo) -> Result<Self> {
-        let (notification_tx, notification_rx) = mpsc::channel();
-        let notification_thread = thread::Builder::new()
-            .name("ctlyrics-lyric-notification".to_string())
-            .spawn(move || run_notifications(notification_rx))
-            .context("failed to start lyric notification thread")?;
+        let lyric_display = LyricDisplay::start(playback.snapshot().lyric)?;
+        let lyric_display_sender = lyric_display.sender();
         let scroll_active_until = Arc::new(AtomicU64::new(0));
         let item = TrayItem {
             exit,
@@ -154,7 +273,7 @@ impl SniTray {
             locale,
             scroll_step: 0,
             scroll_active_until: scroll_active_until.clone(),
-            notification_commands: notification_tx.clone(),
+            lyric_display: lyric_display_sender,
         };
         let (command_tx, command_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -178,9 +297,7 @@ impl SniTray {
                             let _ = handle.update(|item| {
                                 item.scroll_step = 0;
                                 let lyric = item.playback.snapshot().lyric;
-                                let _ = item
-                                    .notification_commands
-                                    .send(NotificationCommand::Update(lyric));
+                                item.lyric_display.update(lyric);
                             });
                         }
                         Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
@@ -202,8 +319,7 @@ impl SniTray {
         Ok(Self {
             commands: command_tx,
             thread: Some(thread),
-            notification_commands: notification_tx,
-            notification_thread: Some(notification_thread),
+            lyric_display: Some(lyric_display),
         })
     }
 
@@ -216,11 +332,8 @@ impl SniTray {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
-        let _ = self
-            .notification_commands
-            .send(NotificationCommand::Shutdown);
-        if let Some(thread) = self.notification_thread.take() {
-            let _ = thread.join();
+        if let Some(display) = self.lyric_display.take() {
+            display.shutdown();
         }
     }
 }
