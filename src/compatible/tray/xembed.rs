@@ -76,6 +76,11 @@ struct RasterizedText {
     alpha: Vec<u8>,
 }
 
+struct LyricBubbleContent {
+    horizontal: RasterizedText,
+    vertical: RasterizedText,
+}
+
 struct MenuContent {
     playback: RasterizedText,
     quit: RasterizedText,
@@ -100,6 +105,22 @@ impl MenuContent {
         Self {
             playback: rasterize_text(font, playback),
             quit: rasterize_text(font, quit_label),
+        }
+    }
+}
+
+impl LyricBubbleContent {
+    fn new(font: &Font, text: &str) -> Self {
+        Self {
+            horizontal: rasterize_text(font, text),
+            vertical: rasterize_vertical_text(font, text),
+        }
+    }
+
+    fn text(&self, orientation: LyricOrientation) -> &RasterizedText {
+        match orientation {
+            LyricOrientation::Horizontal => &self.horizontal,
+            LyricOrientation::Vertical => &self.vertical,
         }
     }
 }
@@ -386,7 +407,7 @@ fn run_tray(
         .map(|font| MenuContent::new(font, &playback_snapshot.line, quit_label));
     let mut bubble_text = menu_font
         .as_ref()
-        .map(|font| rasterize_text(font, &playback_snapshot.lyric));
+        .map(|font| LyricBubbleContent::new(font, &playback_snapshot.lyric));
     let mut icon_width = ICON_SIZE;
     let mut icon_height = ICON_SIZE;
     let mut menu_open = false;
@@ -417,7 +438,7 @@ fn run_tray(
                 .map(|font| MenuContent::new(font, &current_snapshot.line, quit_label));
             bubble_text = menu_font
                 .as_ref()
-                .map(|font| rasterize_text(font, &current_snapshot.lyric));
+                .map(|font| LyricBubbleContent::new(font, &current_snapshot.lyric));
             menu_opened_at = Instant::now();
             bubble_started_at = Instant::now();
             last_bubble_draw = Instant::now() - BUBBLE_FRAME_INTERVAL;
@@ -676,7 +697,7 @@ fn draw_lyric_bubble(
     window: Window,
     gc: u32,
     format: PixelFormat,
-    text: &RasterizedText,
+    content: &LyricBubbleContent,
     orientation: LyricOrientation,
     elapsed: Duration,
     anchor: (i16, i16),
@@ -684,7 +705,7 @@ fn draw_lyric_bubble(
     screen_height: u16,
 ) -> Result<()> {
     let (rgba, width, height) =
-        render_lyric_bubble(text, orientation, elapsed, screen_width, screen_height);
+        render_lyric_bubble(content, orientation, elapsed, screen_width, screen_height);
     let max_x = i32::from(screen_width.saturating_sub(width));
     let max_y = i32::from(screen_height.saturating_sub(height));
     let x = (i32::from(anchor.0) - i32::from(width) / 2).clamp(0, max_x);
@@ -720,12 +741,13 @@ fn draw_lyric_bubble(
 }
 
 fn render_lyric_bubble(
-    text: &RasterizedText,
+    content: &LyricBubbleContent,
     orientation: LyricOrientation,
     elapsed: Duration,
     screen_width: u16,
     screen_height: u16,
 ) -> (Vec<u8>, u16, u16) {
+    let text = content.text(orientation);
     let padding = BUBBLE_PADDING * 2;
     let (width, height) = match orientation {
         LyricOrientation::Horizontal => {
@@ -738,8 +760,8 @@ fn render_lyric_bubble(
         LyricOrientation::Vertical => {
             let limit = usize::from(screen_height.saturating_sub(16)).max(1);
             (
-                (text.height + padding).max(42),
-                (text.width + padding).min(limit).max(limit.min(80)),
+                (text.width + padding).max(42),
+                (text.height + padding).min(limit).max(limit.min(80)),
             )
         }
     };
@@ -834,8 +856,8 @@ fn draw_vertical_lyric(
     elapsed: Duration,
 ) {
     let viewport = usize::from(height).saturating_sub(BUBBLE_PADDING * 2);
-    let overflow = text.width > viewport;
-    let cycle = text.width + SCROLL_GAP as usize;
+    let overflow = text.height > viewport;
+    let cycle = text.height + SCROLL_GAP as usize;
     let scroll = if overflow {
         (elapsed.as_millis() as usize / 35) % cycle
     } else {
@@ -844,24 +866,23 @@ fn draw_vertical_lyric(
     let top = if overflow {
         BUBBLE_PADDING
     } else {
-        (usize::from(height).saturating_sub(text.width)) / 2
+        (usize::from(height).saturating_sub(text.height)) / 2
     };
-    let left = (usize::from(width).saturating_sub(text.height)) / 2;
+    let left = (usize::from(width).saturating_sub(text.width)) / 2;
     for destination_y in 0..viewport {
-        let source_axis = if overflow {
+        let source_y = if overflow {
             (scroll + destination_y) % cycle
         } else {
             destination_y
         };
-        if source_axis >= text.width {
+        if source_y >= text.height {
             continue;
         }
-        let source_x = text.width - 1 - source_axis;
-        for source_y in 0..text.height {
+        for source_x in 0..text.width {
             blend_dynamic_pixel(
                 pixels,
                 width,
-                left + source_y,
+                left + source_x,
                 top + destination_y,
                 text.alpha[source_y * text.width + source_x],
             );
@@ -1365,6 +1386,42 @@ fn rasterize_text(font: &Font, text: &str) -> RasterizedText {
     }
 }
 
+fn rasterize_vertical_text(font: &Font, text: &str) -> RasterizedText {
+    let glyphs: Vec<_> = text
+        .chars()
+        .filter(|character| !matches!(character, '\r' | '\n'))
+        .map(|character| rasterize_text(font, &character.to_string()))
+        .collect();
+    let cell_height = glyphs
+        .iter()
+        .map(|glyph| glyph.height)
+        .max()
+        .unwrap_or(0)
+        .max(FONT_SIZE.ceil() as usize);
+    stack_vertical_glyphs(&glyphs, cell_height)
+}
+
+fn stack_vertical_glyphs(glyphs: &[RasterizedText], cell_height: usize) -> RasterizedText {
+    let width = glyphs.iter().map(|glyph| glyph.width).max().unwrap_or(0);
+    let height = glyphs.len() * cell_height;
+    let mut alpha = vec![0; width * height];
+    for (index, glyph) in glyphs.iter().enumerate() {
+        let offset_x = width.saturating_sub(glyph.width) / 2;
+        let offset_y = index * cell_height + cell_height.saturating_sub(glyph.height) / 2;
+        for y in 0..glyph.height {
+            for x in 0..glyph.width {
+                let destination = (offset_y + y) * width + offset_x + x;
+                alpha[destination] = alpha[destination].max(glyph.alpha[y * glyph.width + x]);
+            }
+        }
+    }
+    RasterizedText {
+        width,
+        height,
+        alpha,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn blit_scrolling_text(
     pixels: &mut [u8],
@@ -1515,4 +1572,54 @@ fn hide_bubble(connection: &RustConnection, bubble: Window) -> Result<()> {
     connection.unmap_window(bubble)?;
     connection.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vertical_glyphs_are_stacked_upright_from_top_to_bottom() {
+        let glyphs = [
+            RasterizedText {
+                width: 2,
+                height: 2,
+                alpha: vec![255, 0, 0, 128],
+            },
+            RasterizedText {
+                width: 1,
+                height: 1,
+                alpha: vec![64],
+            },
+        ];
+
+        let text = stack_vertical_glyphs(&glyphs, 3);
+
+        assert_eq!((text.width, text.height), (2, 6));
+        assert_eq!(&text.alpha[0..4], &[255, 0, 0, 128]);
+        assert_eq!(&text.alpha[8..10], &[64, 0]);
+    }
+
+    #[test]
+    fn vertical_drawing_does_not_rotate_the_cached_text() {
+        let text = RasterizedText {
+            width: 2,
+            height: 3,
+            alpha: vec![255, 0, 0, 0, 0, 255],
+        };
+        let width = 32;
+        let height = 31;
+        let mut pixels = vec![0; usize::from(width) * usize::from(height) * 4];
+
+        draw_vertical_lyric(&mut pixels, width, height, &text, Duration::ZERO);
+
+        let pixel = |x: usize, y: usize| {
+            let offset = (y * usize::from(width) + x) * 4;
+            &pixels[offset..offset + 3]
+        };
+        assert_eq!(pixel(15, 14), &[245, 245, 245]);
+        assert_eq!(pixel(16, 16), &[245, 245, 245]);
+        assert_eq!(pixel(16, 14), &[0, 0, 0]);
+        assert_eq!(pixel(15, 16), &[0, 0, 0]);
+    }
 }
