@@ -45,6 +45,7 @@ struct WebText {
     search_placeholder: &'static str,
     song_count: &'static str,
     no_audio_files: &'static str,
+    no_search_results: &'static str,
     configure_first: &'static str,
     song: &'static str,
     file_path: &'static str,
@@ -93,6 +94,7 @@ impl WebText {
             search_placeholder: tr(locale, "search_placeholder"),
             song_count: tr(locale, "song_count"),
             no_audio_files: tr(locale, "no_audio_files"),
+            no_search_results: tr(locale, "no_search_results"),
             configure_first: tr(locale, "configure_first"),
             song: tr(locale, "song"),
             file_path: tr(locale, "file_path"),
@@ -138,6 +140,7 @@ struct ClientText {
     edit_mapping: &'static str,
     add_mapping: &'static str,
     settings_save_failed: &'static str,
+    song_count: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -213,7 +216,7 @@ async fn index(
     let music_dir_opt = store_guard.music_dir().map(|s| s.to_string());
     let music_dir_str = music_dir_opt.clone().unwrap_or_default();
     let has_music_dir = music_dir_opt.is_some();
-    let search = query.q.unwrap_or_default().to_lowercase();
+    let search = query.q.unwrap_or_default();
 
     let (songs, lrc_files) = if let Some(ref dir) = music_dir_opt {
         let songs = scan_music_dir(dir).unwrap_or_default();
@@ -221,12 +224,6 @@ async fn index(
 
         let rows: Vec<SongRow> = songs
             .into_iter()
-            .filter(|s| {
-                search.is_empty()
-                    || s.title.to_lowercase().contains(&search)
-                    || s.artist.to_lowercase().contains(&search)
-                    || s.path.to_lowercase().contains(&search)
-            })
             .map(|song| {
                 let mapping = store_guard.get_by_music_path(&song.path).cloned();
                 let lrc_filename = mapping
@@ -268,6 +265,7 @@ async fn index(
             edit_mapping: tr(locale, "edit_mapping"),
             add_mapping: tr(locale, "add_mapping"),
             settings_save_failed: tr(locale, "settings_save_failed"),
+            song_count: tr(locale, "song_count"),
         })
         .unwrap(),
         auto_selected: preference == "auto",

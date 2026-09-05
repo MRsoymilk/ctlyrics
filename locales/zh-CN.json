@@ -36,6 +36,7 @@
   "search_placeholder": "搜索歌曲、艺术家、路径...",
   "song_count": "首歌曲",
   "no_audio_files": "该目录下未找到音频文件",
+  "no_search_results": "没有符合搜索条件的歌曲",
   "configure_first": "请先在设置中指定音乐目录",
   "song": "歌曲",
   "file_path": "文件路径",

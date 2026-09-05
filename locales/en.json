@@ -36,6 +36,7 @@
   "search_placeholder": "Search songs, artists, or paths...",
   "song_count": "songs",
   "no_audio_files": "No audio files were found in this directory",
+  "no_search_results": "No songs match your search",
   "configure_first": "Configure a music directory first",
   "song": "Song",
   "file_path": "File path",
