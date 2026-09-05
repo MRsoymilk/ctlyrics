@@ -16,6 +16,7 @@ use x11rb::wrapper::ConnectionExt as _;
 
 use crate::cmus::{PlaybackCommand, control_cmus, seek_cmus};
 use crate::i18n::{Locale, tr};
+use crate::web::start_and_open;
 
 use super::{
     ExitSignal, PlaybackInfo, PlaybackSnapshot,
@@ -29,7 +30,7 @@ use super::{
 
 const ICON_SIZE: u16 = 24;
 const MENU_WIDTH: u16 = 360;
-const MENU_HEIGHT: u16 = 130;
+const MENU_HEIGHT: u16 = 162;
 const MENU_PADDING: i32 = 12;
 const MENU_SCROLL_GAP: i32 = 48;
 const PANEL_X: i16 = 8;
@@ -49,7 +50,8 @@ const PREVIOUS_X: i16 = 108;
 const TOGGLE_X: i16 = 158;
 const NEXT_X: i16 = 208;
 const SEPARATOR_Y: u16 = 97;
-const QUIT_TOP: u16 = 98;
+const WEB_TOP: u16 = 98;
+const QUIT_TOP: u16 = 130;
 const SYSTEM_TRAY_REQUEST_DOCK: u32 = 0;
 const XEMBED_MAPPED: u32 = 1;
 const XK_ESCAPE: u32 = 0xff1b;
@@ -70,6 +72,7 @@ struct PixelFormat {
 
 struct MenuContent {
     playback: RasterizedText,
+    web: RasterizedText,
     quit: RasterizedText,
 }
 
@@ -78,6 +81,7 @@ enum MenuTarget {
     Previous,
     Toggle,
     Next,
+    Web,
     Quit,
 }
 
@@ -94,9 +98,10 @@ struct BubbleDrag {
 }
 
 impl MenuContent {
-    fn new(font: &Font, playback: &str, quit_label: &str) -> Self {
+    fn new(font: &Font, playback: &str, web_label: &str, quit_label: &str) -> Self {
         Self {
             playback: rasterize_text(font, playback),
+            web: rasterize_text(font, web_label),
             quit: rasterize_text(font, quit_label),
         }
     }
@@ -378,15 +383,16 @@ fn run_tray(
     connection.flush()?;
     let _ = ready.send(Ok(()));
 
+    let web_label = tr(locale, "tray_web");
     let quit_label = tr(locale, "tray_quit");
     let mut playback_snapshot = playback.snapshot();
     let mut menu_font = load_font(&format!(
-        "{} {} {quit_label}",
+        "{} {} {web_label} {quit_label}",
         playback_snapshot.line, playback_snapshot.lyric
     ));
     let mut menu_content = menu_font
         .as_ref()
-        .map(|font| MenuContent::new(font, &playback_snapshot.line, quit_label));
+        .map(|font| MenuContent::new(font, &playback_snapshot.line, web_label, quit_label));
     let mut bubble_text = menu_font
         .as_ref()
         .map(|font| LyricBubbleContent::new(font, &playback_snapshot.lyric));
@@ -414,13 +420,13 @@ fn run_tray(
                     || !font_supports(font, &current_snapshot.lyric)
             }) {
                 menu_font = load_font(&format!(
-                    "{} {} {quit_label}",
+                    "{} {} {web_label} {quit_label}",
                     current_snapshot.line, current_snapshot.lyric
                 ));
             }
             menu_content = menu_font
                 .as_ref()
-                .map(|font| MenuContent::new(font, &current_snapshot.line, quit_label));
+                .map(|font| MenuContent::new(font, &current_snapshot.line, web_label, quit_label));
             bubble_text = menu_font
                 .as_ref()
                 .map(|font| LyricBubbleContent::new(font, &current_snapshot.lyric));
@@ -621,6 +627,12 @@ fn run_tray(
                                     control_from_tray(PlaybackCommand::TogglePause)
                                 }
                                 MenuTarget::Next => control_from_tray(PlaybackCommand::Next),
+                                MenuTarget::Web => {
+                                    close_menu(&connection, menu)?;
+                                    menu_open = false;
+                                    hovered = None;
+                                    launch_web_from_tray();
+                                }
                                 MenuTarget::Quit => {
                                     close_menu(&connection, menu)?;
                                     menu_open = false;
@@ -909,6 +921,21 @@ fn draw_menu(
     let fallback = fallback.trim().as_bytes();
     connection.image_text8(window, gc, 12, 25, &fallback[..fallback.len().min(54)])?;
     connection.image_text8(window, gc, 116, 79, b"|<     ||     >|")?;
+    if hovered == Some(MenuTarget::Web) {
+        connection.poly_fill_rectangle(
+            window,
+            gc,
+            &[Rectangle {
+                x: 0,
+                y: WEB_TOP as i16,
+                width: MENU_WIDTH,
+                height: QUIT_TOP - WEB_TOP,
+            }],
+        )?;
+        connection.change_gc(gc, &ChangeGCAux::new().foreground(black).background(white))?;
+    }
+    connection.image_text8(window, gc, 168, 120, b"Web")?;
+    connection.change_gc(gc, &ChangeGCAux::new().foreground(white).background(black))?;
     if hovered == Some(MenuTarget::Quit) {
         connection.poly_fill_rectangle(
             window,
@@ -922,7 +949,7 @@ fn draw_menu(
         )?;
         connection.change_gc(gc, &ChangeGCAux::new().foreground(black).background(white))?;
     }
-    connection.image_text8(window, gc, 168, 120, b"Quit")?;
+    connection.image_text8(window, gc, 168, 152, b"Quit")?;
     connection.flush()?;
     Ok(())
 }
@@ -992,6 +1019,28 @@ fn render_menu(
         let offset = separator + x * 4;
         pixels[offset..offset + 3].copy_from_slice(&[70, 70, 70]);
     }
+    if hovered == Some(MenuTarget::Web) {
+        fill_rect(
+            &mut pixels,
+            0,
+            WEB_TOP as i16,
+            MENU_WIDTH,
+            QUIT_TOP - WEB_TOP,
+            [29, 96, 72],
+        );
+    }
+    let web_x = ((usize::from(MENU_WIDTH).saturating_sub(content.web.width)) / 2) as i32;
+    blit_text(
+        &mut pixels,
+        &content.web,
+        web_x,
+        i32::from(WEB_TOP) + 5,
+        0,
+        MENU_WIDTH,
+        WEB_TOP,
+        QUIT_TOP,
+        [255, 255, 255],
+    );
     if hovered == Some(MenuTarget::Quit) {
         fill_rect(
             &mut pixels,
@@ -1054,7 +1103,7 @@ fn draw_control(pixels: &mut [u8], target: MenuTarget, highlighted: bool, playin
         MenuTarget::Previous => PREVIOUS_X,
         MenuTarget::Toggle => TOGGLE_X,
         MenuTarget::Next => NEXT_X,
-        MenuTarget::Quit => return,
+        MenuTarget::Web | MenuTarget::Quit => return,
     };
     if highlighted {
         fill_rect(
@@ -1083,7 +1132,7 @@ fn draw_control(pixels: &mut [u8], target: MenuTarget, highlighted: bool, playin
             draw_triangle(pixels, center_x - 1, center_y, true, color);
             fill_rect(pixels, center_x + 7, center_y - 7, 2, 15, color);
         }
-        MenuTarget::Quit => {}
+        MenuTarget::Web | MenuTarget::Quit => {}
     }
 }
 
@@ -1138,8 +1187,13 @@ fn menu_target(x: i16, y: i16) -> Option<MenuTarget> {
             return Some(MenuTarget::Next);
         }
     }
-    if x >= 0 && x < MENU_WIDTH as i16 && y >= QUIT_TOP as i16 && y < MENU_HEIGHT as i16 {
-        return Some(MenuTarget::Quit);
+    if x >= 0 && x < MENU_WIDTH as i16 {
+        if y >= WEB_TOP as i16 && y < QUIT_TOP as i16 {
+            return Some(MenuTarget::Web);
+        }
+        if y >= QUIT_TOP as i16 && y < MENU_HEIGHT as i16 {
+            return Some(MenuTarget::Quit);
+        }
     }
     None
 }
@@ -1160,6 +1214,12 @@ fn seek_position(x: i16, y: i16, duration: u64) -> Option<u64> {
 fn control_from_tray(command: PlaybackCommand) {
     if let Err(error) = control_cmus(command) {
         tracing::warn!(%error, "tray playback control failed");
+    }
+}
+
+fn launch_web_from_tray() {
+    if let Err(error) = start_and_open() {
+        tracing::warn!(%error, "failed to open Web interface from tray");
     }
 }
 
@@ -1344,5 +1404,22 @@ mod tests {
             bubble_position(BubblePlacement::Fixed((-20, 900)), (120, 80), (800, 600),),
             (0, 520)
         );
+    }
+
+    #[test]
+    fn web_and_quit_menu_rows_have_distinct_targets() {
+        assert!(matches!(
+            menu_target(10, WEB_TOP as i16),
+            Some(MenuTarget::Web)
+        ));
+        assert!(matches!(
+            menu_target(10, QUIT_TOP as i16 - 1),
+            Some(MenuTarget::Web)
+        ));
+        assert!(matches!(
+            menu_target(10, QUIT_TOP as i16),
+            Some(MenuTarget::Quit)
+        ));
+        assert!(menu_target(10, MENU_HEIGHT as i16).is_none());
     }
 }

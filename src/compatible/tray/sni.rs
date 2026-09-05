@@ -12,6 +12,7 @@ use notify_rust::{Hint, Notification, NotificationHandle, Timeout};
 
 use crate::cmus::{PlaybackCommand, control_cmus};
 use crate::i18n::{Locale, tr};
+use crate::web::start_and_open;
 
 use super::wayland::{WaylandBubble, WaylandBubbleSender};
 use super::{ExitSignal, PlaybackInfo, icon::argb_icon, marquee_text, progress_offset};
@@ -108,6 +109,13 @@ impl Tray for TrayItem {
             }
             .into(),
             MenuItem::Separator,
+            StandardItem {
+                label: tr(self.locale, "tray_web").to_string(),
+                icon_name: "web-browser".to_string(),
+                activate: Box::new(|_| launch_web_from_tray()),
+                ..Default::default()
+            }
+            .into(),
             StandardItem {
                 label: self.quit_label.clone(),
                 activate: Box::new(|tray: &mut Self| tray.exit.request()),
@@ -357,6 +365,12 @@ fn progress_label(position: u64, duration: u64) -> String {
         format_time(position),
         format_time(duration)
     )
+}
+
+fn launch_web_from_tray() {
+    if let Err(error) = start_and_open() {
+        tracing::warn!(%error, "failed to open Web interface from tray");
+    }
 }
 
 fn format_time(seconds: u64) -> String {
