@@ -12,6 +12,12 @@
 
 ![ctlyrics](README/ctlyrics.jpg)
 
+web 模式：
+
+![web light](README/web-light.jpg)
+
+![web dark](README/web-dark.jpg)
+
 ## 功能
 
 - 在终端中同步显示 cmus 当前歌曲歌词
@@ -224,7 +230,9 @@ cmus-remote -Q
 
 ## 歌词下载工具
 
-`tools/` 中保留了早期 Python 版本的本地歌曲列表生成和歌词下载工具。脚本只使用 Python 标准库，不需要额外安装依赖。
+`tools/` 本地歌曲列表生成和歌词下载工具。脚本只使用 Python 标准库，不需要额外安装依赖。
+
+当前从 https://www.sq0527.cn/ 获取歌词。
 
 先从音乐目录生成列表：
 

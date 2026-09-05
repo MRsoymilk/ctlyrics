@@ -12,6 +12,12 @@
 
 ![ctlyrics](README/ctlyrics.jpg)
 
+web mode:
+
+![web light](README/web-light.jpg)
+
+![web dark](README/web-dark.jpg)
+
 ## Features
 
 - Display synchronized lyrics for the current cmus track in the terminal
@@ -210,6 +216,8 @@ Metadata such as `[ti:]`, `[ar:]`, and `[al:]` is not displayed as lyric text.
 ## Python Tools
 
 The dependency-free scripts under `tools/` generate a local song list and download LRC files.
+
+Get the lyrics from https://www.sq0527.cn/ at the moment.
 
 Generate a list recursively from a music directory:
 

@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
     let command_locale = locale_from_args();
     let matches = localize_command(
         Command::new("ctlyrics")
-            .version("0.1.0")
+            .version(env!("CARGO_PKG_VERSION"))
             .about(tr(command_locale, "app_about").to_string())
             .arg(
                 Arg::new("language")
@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
             )
             .subcommand(localize_command(
                 Command::new("web")
-                    .version("0.1.0")
+                    .version(env!("CARGO_PKG_VERSION"))
                     .about(tr(command_locale, "web_about").to_string())
                     .arg(
                         Arg::new("port")
