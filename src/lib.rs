@@ -1,4 +1,5 @@
 pub mod cmus;
+pub mod compatible;
 pub mod i18n;
 pub mod logger;
 pub mod lyrics_cache;

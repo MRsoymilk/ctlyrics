@@ -13,6 +13,7 @@ use std::io::{self, Write};
 use std::time::Duration;
 
 use ctlyrics::cmus::get_cmus_info;
+use ctlyrics::compatible::tray::{ExitSignal, TrayService};
 use ctlyrics::i18n::{Locale, detect_system_locale, preferred_locale, set_preference, tr};
 use ctlyrics::logger::init_logger;
 use ctlyrics::lyrics_cache::LyricsCache;
@@ -69,7 +70,11 @@ async fn main() -> Result<()> {
             let port: u16 = sub_m.get_one::<String>("port").unwrap().parse()?;
             run_web(port, locale).await
         }
-        _ => run_tui(locale),
+        _ => {
+            let exit = ExitSignal::new();
+            let tray = TrayService::start(locale, exit.clone());
+            run_tui(locale, exit, &tray)
+        }
     }
 }
 
@@ -122,7 +127,7 @@ fn locale_from_args() -> Locale {
     preferred_locale()
 }
 
-fn run_tui(locale: Locale) -> Result<()> {
+fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
     let mapping_store = MappingStore::load(&get_mapping_path()).unwrap_or_default();
 
     enable_raw_mode()?;
@@ -142,7 +147,11 @@ fn run_tui(locale: Locale) -> Result<()> {
     let mut lyrics_cache = LyricsCache::new().with_mapping(mapping_store);
 
     loop {
+        if exit.is_requested() {
+            break;
+        }
         let info = get_cmus_info().unwrap_or_default();
+        tray.update_playback(locale, &info.title, &info.artist, &info.status);
         let lyrics = lyrics_cache.load_lyrics(&info.title, Some(&info.artist), Some(&info.file));
 
         terminal.draw(|frame| player.draw(frame, &info, &lyrics))?;

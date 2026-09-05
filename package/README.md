@@ -17,10 +17,16 @@ The AppImage uses the host installation of `cmus`, `cmus-remote`, and
 `python3`. The bundled Python tools can be invoked through the AppImage:
 
 ```bash
-./package/dist/ctlyrics-0.1.1-x86_64.AppImage tools get-songs --help
-./package/dist/ctlyrics-0.1.1-x86_64.AppImage tools get-lyrics --help
-./package/dist/ctlyrics-0.1.1-x86_64.AppImage tools auto-map --help
+./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools get-songs --help
+./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools get-lyrics --help
+./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools auto-map --help
 ```
 
 Tool arguments and relative paths are evaluated from the caller's current
 working directory.
+
+The TUI system tray supports StatusNotifierItem hosts on Wayland and falls
+back to XEmbed on X11. Its right-click menu scrolls the current song, artist,
+and playback status on one line. GNOME requires an
+AppIndicator/KStatusNotifier shell extension. If no tray host is available,
+the TUI continues without an icon.
