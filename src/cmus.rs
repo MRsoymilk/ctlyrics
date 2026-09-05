@@ -88,14 +88,14 @@ fn parse_cmus_output(output: &str) -> Result<CmusInfo, CmusError> {
         .unwrap_or((filename.trim(), None));
     let title = tag_title.unwrap_or_else(|| {
         if filename_title.is_empty() {
-            "unknown".to_string()
+            String::new()
         } else {
             filename_title.to_string()
         }
     });
     let artist = tag_artist
         .or_else(|| filename_artist.map(str::to_string))
-        .unwrap_or_else(|| "unknown".to_string());
+        .unwrap_or_default();
 
     Ok(CmusInfo {
         position,

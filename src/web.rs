@@ -1,11 +1,17 @@
-use crate::mapping::{MappingError, MappingStore, SongFile, SongMapping, generate_id, get_mapping_path, list_lrc_files, read_lrc_content, scan_music_dir};
+use crate::i18n::{Locale, detect_browser_locale, format as tr_format, tr};
+use crate::mapping::{
+    MappingError, MappingStore, SongFile, SongMapping, generate_id, get_mapping_path,
+    list_lrc_files, read_lrc_content, scan_music_dir,
+};
 use askama::Template;
 use axum::{
+    Json, Router,
     extract::{DefaultBodyLimit, Form, Multipart, Path, Query, State},
+    http::HeaderMap,
     http::StatusCode,
+    http::header::{ACCEPT_LANGUAGE, COOKIE, SET_COOKIE},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -15,6 +21,12 @@ use tower_http::services::ServeDir;
 #[derive(Template)]
 #[template(path = "index.html")]
 struct IndexTemplate {
+    locale: &'static str,
+    text: WebText,
+    client_text_json: String,
+    auto_selected: bool,
+    en_selected: bool,
+    zh_cn_selected: bool,
     music_dir: String,
     has_music_dir: bool,
     songs: Vec<SongRow>,
@@ -22,7 +34,101 @@ struct IndexTemplate {
     lrc_files: Vec<String>,
 }
 
+struct WebText {
+    page_title: &'static str,
+    loading: &'static str,
+    drop_overlay: &'static str,
+    music_directory: &'static str,
+    edit: &'static str,
+    not_configured: &'static str,
+    configure: &'static str,
+    search_placeholder: &'static str,
+    song_count: &'static str,
+    no_audio_files: &'static str,
+    configure_first: &'static str,
+    song: &'static str,
+    file_path: &'static str,
+    lyric_file: &'static str,
+    lyric_preview: &'static str,
+    actions: &'static str,
+    mapped: &'static str,
+    unmapped: &'static str,
+    no_lyrics: &'static str,
+    confirm_unmap: &'static str,
+    remove_mapping: &'static str,
+    edit_mapping: &'static str,
+    add_mapping: &'static str,
+    title: &'static str,
+    artist: &'static str,
+    select_lyric: &'static str,
+    drop_lrc: &'static str,
+    click_multiple: &'static str,
+    cancel: &'static str,
+    save_mapping: &'static str,
+    settings: &'static str,
+    music_directory_path: &'static str,
+    supported_formats: &'static str,
+    save_settings: &'static str,
+    language: &'static str,
+    language_auto_label: &'static str,
+    language_english: &'static str,
+    language_chinese: &'static str,
+}
 
+impl WebText {
+    fn new(locale: Locale) -> Self {
+        Self {
+            page_title: tr(locale, "page_title"),
+            loading: tr(locale, "loading"),
+            drop_overlay: tr(locale, "drop_overlay"),
+            music_directory: tr(locale, "music_directory"),
+            edit: tr(locale, "edit"),
+            not_configured: tr(locale, "not_configured"),
+            configure: tr(locale, "configure"),
+            search_placeholder: tr(locale, "search_placeholder"),
+            song_count: tr(locale, "song_count"),
+            no_audio_files: tr(locale, "no_audio_files"),
+            configure_first: tr(locale, "configure_first"),
+            song: tr(locale, "song"),
+            file_path: tr(locale, "file_path"),
+            lyric_file: tr(locale, "lyric_file"),
+            lyric_preview: tr(locale, "lyric_preview"),
+            actions: tr(locale, "actions"),
+            mapped: tr(locale, "mapped"),
+            unmapped: tr(locale, "unmapped"),
+            no_lyrics: tr(locale, "no_lyrics"),
+            confirm_unmap: tr(locale, "confirm_unmap"),
+            remove_mapping: tr(locale, "remove_mapping"),
+            edit_mapping: tr(locale, "edit_mapping"),
+            add_mapping: tr(locale, "add_mapping"),
+            title: tr(locale, "title"),
+            artist: tr(locale, "artist"),
+            select_lyric: tr(locale, "select_lyric"),
+            drop_lrc: tr(locale, "drop_lrc"),
+            click_multiple: tr(locale, "click_multiple"),
+            cancel: tr(locale, "cancel"),
+            save_mapping: tr(locale, "save_mapping"),
+            settings: tr(locale, "settings"),
+            music_directory_path: tr(locale, "music_directory_path"),
+            supported_formats: tr(locale, "supported_formats"),
+            save_settings: tr(locale, "save_settings"),
+            language: tr(locale, "language"),
+            language_auto_label: tr(locale, "language_auto_label"),
+            language_english: tr(locale, "language_english"),
+            language_chinese: tr(locale, "language_chinese"),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ClientText {
+    upload_lrc_only: &'static str,
+    uploaded_count: &'static str,
+    upload_failed: &'static str,
+    edit_mapping: &'static str,
+    add_mapping: &'static str,
+    settings_save_failed: &'static str,
+}
 
 #[derive(Debug, Clone, Serialize)]
 struct SongRow {
@@ -57,6 +163,11 @@ struct UnmapForm {
     song_path: String,
 }
 
+#[derive(Deserialize)]
+struct LanguageForm {
+    language: String,
+}
+
 #[derive(Serialize)]
 struct UploadResponse {
     files: Vec<String>,
@@ -72,6 +183,7 @@ pub fn create_router() -> Router {
     Router::new()
         .route("/", get(index))
         .route("/settings", post(update_settings))
+        .route("/language", post(update_language))
         .route("/map", post(create_mapping))
         .route("/unmap", post(remove_mapping))
         .route("/api/lrc/upload", post(upload_lrc))
@@ -84,7 +196,9 @@ pub fn create_router() -> Router {
 async fn index(
     State(store): State<SharedStore>,
     Query(query): Query<SearchQuery>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    let (locale, preference) = web_locale(&headers);
     let store_guard = store.lock().unwrap();
     let music_dir_opt = store_guard.music_dir().map(|s| s.to_string());
     let music_dir_str = music_dir_opt.clone().unwrap_or_default();
@@ -105,7 +219,10 @@ async fn index(
             })
             .map(|song| {
                 let mapping = store_guard.get_by_music_path(&song.path).cloned();
-                let lrc_filename = mapping.as_ref().map(|m| m.lrc_filename.clone()).unwrap_or_default();
+                let lrc_filename = mapping
+                    .as_ref()
+                    .map(|m| m.lrc_filename.clone())
+                    .unwrap_or_default();
                 let lrc_preview = mapping
                     .as_ref()
                     .and_then(|m| read_lrc_content(&m.lrc_filename).ok())
@@ -132,6 +249,20 @@ async fn index(
     };
 
     let template = IndexTemplate {
+        locale: locale.code(),
+        text: WebText::new(locale),
+        client_text_json: serde_json::to_string(&ClientText {
+            upload_lrc_only: tr(locale, "upload_lrc_only"),
+            uploaded_count: tr(locale, "uploaded_count"),
+            upload_failed: tr(locale, "upload_failed"),
+            edit_mapping: tr(locale, "edit_mapping"),
+            add_mapping: tr(locale, "add_mapping"),
+            settings_save_failed: tr(locale, "settings_save_failed"),
+        })
+        .unwrap(),
+        auto_selected: preference == "auto",
+        en_selected: preference == "en",
+        zh_cn_selected: preference == "zh-CN",
         music_dir: music_dir_str,
         has_music_dir,
         songs,
@@ -143,18 +274,42 @@ async fn index(
 
 async fn update_settings(
     State(store): State<SharedStore>,
+    headers: HeaderMap,
     Form(form): Form<SettingsForm>,
 ) -> Result<Response, AppError> {
+    let (locale, _) = web_locale(&headers);
     let mut store_guard = store.lock().unwrap();
     let path = std::path::Path::new(&form.music_dir);
     if !path.exists() || !path.is_dir() {
-        let msg = r#"<div class="message error">目录不存在</div>"#;
+        let msg = format!(
+            r#"<div class="message error">{}</div>"#,
+            tr(locale, "directory_not_found")
+        );
         return Ok((StatusCode::BAD_REQUEST, Html(msg)).into_response());
     }
     store_guard.set_music_dir(form.music_dir.clone());
     store_guard.save(&get_mapping_path())?;
-    let msg = r#"<div class="message success">保存成功</div>"#;
+    let msg = format!(
+        r#"<div class="message success">{}</div>"#,
+        tr(locale, "settings_saved")
+    );
     Ok(Html(msg).into_response())
+}
+
+async fn update_language(Form(form): Form<LanguageForm>) -> Response {
+    let preference = match form.language.as_str() {
+        "en" => "en",
+        "zh-CN" => "zh-CN",
+        _ => "auto",
+    };
+    let mut response = Redirect::to("/").into_response();
+    response.headers_mut().insert(
+        SET_COOKIE,
+        format!("ctlyrics_language={preference}; Path=/; SameSite=Lax; Max-Age=31536000")
+            .parse()
+            .unwrap(),
+    );
+    response
 }
 
 async fn create_mapping(
@@ -187,7 +342,8 @@ async fn remove_mapping(
     Ok(Redirect::to("/"))
 }
 
-async fn upload_lrc(mut multipart: Multipart) -> Result<Response, AppError> {
+async fn upload_lrc(headers: HeaderMap, mut multipart: Multipart) -> Result<Response, AppError> {
+    let (locale, _) = web_locale(&headers);
     let mut uploaded = Vec::new();
     fs::create_dir_all("lyrics").map_err(MappingError::from)?;
 
@@ -202,7 +358,7 @@ async fn upload_lrc(mut multipart: Multipart) -> Result<Response, AppError> {
         let filename = std::path::Path::new(filename)
             .file_name()
             .and_then(|name| name.to_str())
-            .ok_or_else(|| AppError::BadRequest("无效的文件名".to_string()))?
+            .ok_or_else(|| AppError::BadRequest(tr(locale, "invalid_filename").to_string()))?
             .to_string();
 
         let is_lrc = std::path::Path::new(&filename)
@@ -210,9 +366,10 @@ async fn upload_lrc(mut multipart: Multipart) -> Result<Response, AppError> {
             .and_then(|ext| ext.to_str())
             .is_some_and(|ext| ext.eq_ignore_ascii_case("lrc"));
         if !is_lrc {
-            return Err(AppError::BadRequest(format!(
-                "仅支持 .lrc 文件：{}",
-                filename
+            return Err(AppError::BadRequest(tr_format(
+                locale,
+                "lrc_only",
+                &[("filename", &filename)],
             )));
         }
 
@@ -226,10 +383,33 @@ async fn upload_lrc(mut multipart: Multipart) -> Result<Response, AppError> {
     }
 
     if uploaded.is_empty() {
-        return Err(AppError::BadRequest("没有收到歌词文件".to_string()));
+        return Err(AppError::BadRequest(
+            tr(locale, "no_upload_file").to_string(),
+        ));
     }
 
     Ok(Json(UploadResponse { files: uploaded }).into_response())
+}
+
+fn web_locale(headers: &HeaderMap) -> (Locale, &'static str) {
+    let cookie_preference = headers
+        .get(COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|cookie| {
+                let (name, value) = cookie.trim().split_once('=')?;
+                (name == "ctlyrics_language").then_some(value)
+            })
+        });
+
+    if let Some(locale) = cookie_preference.and_then(Locale::from_code) {
+        return (locale, locale.code());
+    }
+
+    let accept_language = headers
+        .get(ACCEPT_LANGUAGE)
+        .and_then(|value| value.to_str().ok());
+    (detect_browser_locale(accept_language), "auto")
 }
 
 async fn get_lrc_content(
@@ -242,8 +422,6 @@ async fn get_lrc_content(
 
 #[derive(Debug, thiserror::Error)]
 enum AppError {
-    #[error("Not found")]
-    NotFound,
     #[error("Mapping error: {0}")]
     Mapping(#[from] MappingError),
     #[error("Bad request: {0}")]
@@ -253,7 +431,6 @@ enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, msg) = match self {
-            AppError::NotFound => (StatusCode::NOT_FOUND, "Not found".to_string()),
             AppError::Mapping(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
             AppError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
         };

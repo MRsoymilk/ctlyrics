@@ -16,6 +16,7 @@
 - 网页支持拖拽上传一个或多个 `.lrc` 文件
 - 网页保存音乐目录时显示加载进度
 - 网页修改映射后，终端自动重新加载映射配置
+- 支持英文和简体中文，可在 Web、TUI 和 CLI 中切换
 
 ## 环境要求
 
@@ -65,6 +66,14 @@ target/release/ctlyrics
 cargo run
 ```
 
+指定界面语言：
+
+```bash
+./target/debug/ctlyrics --lang en
+./target/debug/ctlyrics --lang zh-CN
+./target/debug/ctlyrics --lang auto
+```
+
 ### 控制键
 
 | 按键 | 功能 |
@@ -82,8 +91,35 @@ cargo run
 | 命令 | 功能 |
 |---|---|
 | `:web` | 即时启动 `http://localhost:3000` 并使用默认浏览器打开 |
+| `:lang en` | 切换为英文并保存设置 |
+| `:lang zh-CN` | 切换为简体中文并保存设置 |
+| `:lang auto` | 清除语言设置并跟随系统语言 |
 
 Web 服务在当前 `ctlyrics` 进程内后台运行，不需要提前单独启动。
+
+## 语言设置
+
+目前支持：
+
+- English (`en`)
+- 简体中文 (`zh-CN`)
+
+未手动选择语言时：
+
+- Web 根据浏览器的 `Accept-Language` 自动选择
+- TUI 和 CLI 根据 `LC_ALL`、`LC_MESSAGES`、`LANG` 自动选择
+- 无法识别时回退到英文
+
+网页右上角可以选择自动、English 或简体中文，选择结果保存在浏览器 Cookie 中。TUI 使用 `:lang` 命令切换，选择结果保存在当前工作目录的 `config/language` 中。
+
+语言文本集中存放于：
+
+```text
+locales/en.json
+locales/zh-CN.json
+```
+
+新增语言时应提供与英文资源完全一致的翻译键。
 
 ### 单独启动 Web 服务
 
@@ -151,6 +187,7 @@ cmus-remote -Q
 
 ```text
 config/mappings.json   # 音乐目录和歌词映射
+config/language        # TUI 和 CLI 语言设置
 lyrics/                # LRC 歌词文件
 log/                   # 程序日志
 ```
@@ -177,6 +214,7 @@ cd target/debug
 ```text
 src/
   main.rs          主程序入口和 TUI 事件循环
+  i18n.rs          语言检测、翻译加载和偏好设置
   player.rs        TUI 渲染、输入和命令处理
   cmus.rs          cmus-remote 查询与歌曲信息解析
   lyrics_cache.rs  映射刷新、LRC 查找和解析
@@ -185,11 +223,15 @@ src/
   logger.rs        日志初始化
 templates/
   index.html       Web 管理页面
+locales/
+  en.json          英文语言资源
+  zh-CN.json       简体中文语言资源
 ```
 
 ## 开发验证
 
 ```bash
 cargo build
+cargo test i18n::tests
 cargo test --no-run
 ```

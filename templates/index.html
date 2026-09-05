@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="{{ locale }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ctlyrics - 歌曲歌词管理</title>
+    <title>{{ text.page_title }}</title>
     <style>
         * { box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; line-height: 1.6; background: #fafafa; }
@@ -64,55 +64,66 @@
         .upload-message { position: fixed; top: 20px; left: 50%; z-index: 2100; max-width: min(520px, 90vw); padding: 10px 16px; border-radius: 8px; background: #2e7d32; color: white; box-shadow: 0 5px 18px rgba(0,0,0,0.18); opacity: 0; pointer-events: none; transform: translate(-50%, -12px); transition: opacity 0.2s, transform 0.2s; }
         .upload-message.show { opacity: 1; transform: translate(-50%, 0); }
         .upload-message.error { background: #c62828; }
+        .language-form { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-bottom: 12px; color: #666; font-size: 13px; }
+        .language-form select { padding: 5px 8px; border: 1px solid #ddd; border-radius: 5px; background: white; }
     </style>
 </head>
 <body>
-    <div class="loading-progress" id="loadingProgress" role="progressbar" aria-label="正在加载" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+    <div class="loading-progress" id="loadingProgress" role="progressbar" aria-label="{{ text.loading }}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
         <div class="loading-progress-bar" id="loadingProgressBar"></div>
     </div>
     <div class="drop-overlay" id="dropOverlay">
-        <div class="drop-overlay-content">松开鼠标，上传歌词文件</div>
+        <div class="drop-overlay-content">{{ text.drop_overlay }}</div>
     </div>
     <div class="upload-message" id="uploadMessage" role="status"></div>
+
+    <form class="language-form" action="/language" method="post">
+        <label for="languageSelect">{{ text.language }}</label>
+        <select id="languageSelect" name="language" onchange="this.form.submit()">
+            <option value="auto" {% if auto_selected %}selected{% endif %}>{{ text.language_auto_label }}</option>
+            <option value="en" {% if en_selected %}selected{% endif %}>{{ text.language_english }}</option>
+            <option value="zh-CN" {% if zh_cn_selected %}selected{% endif %}>{{ text.language_chinese }}</option>
+        </select>
+    </form>
 
     {% if has_music_dir %}
     <div class="music-dir-info">
         <span>ctlyrics</span>
-        <span>📁 音乐目录: {{ music_dir }}</span>
-        <button class="btn btn-ghost" style="padding: 6px 12px; font-size: 12px;" onclick="openSettingsModal()">修改</button>
+        <span>{{ text.music_directory }}: {{ music_dir }}</span>
+        <button class="btn btn-ghost" style="padding: 6px 12px; font-size: 12px;" onclick="openSettingsModal()">{{ text.edit }}</button>
     </div>
     {% else %}
     <div class="music-dir-info empty">
         <span>ctlyrics</span>
-        <span>⚠️ 未设置音乐目录</span>
-        <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px;" onclick="openSettingsModal()">去设置</button>
+        <span>{{ text.not_configured }}</span>
+        <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px;" onclick="openSettingsModal()">{{ text.configure }}</button>
     </div>
     {% endif %}
 
     <div class="toolbar">
         <form class="search-box" method="get" action="/">
-            <input type="search" name="q" placeholder="搜索歌曲、艺术家、路径..." value="{{ search }}">
+            <input type="search" name="q" placeholder="{{ text.search_placeholder }}" value="{{ search }}">
         </form>
-        <span style="color: #999; font-size: 14px;">{{ songs.len() }} 首歌曲</span>
+        <span style="color: #999; font-size: 14px;">{{ songs.len() }} {{ text.song_count }}</span>
     </div>
 
     {% if songs.len() == 0 %}
     <div class="empty-state">
         {% if has_music_dir %}
-        <p>该目录下未找到音频文件</p>
+        <p>{{ text.no_audio_files }}</p>
         {% else %}
-        <p>请先在设置中指定音乐目录</p>
+        <p>{{ text.configure_first }}</p>
         {% endif %}
     </div>
     {% else %}
     <table>
         <thead>
             <tr>
-                <th style="width: 30%;">歌曲</th>
-                <th style="width: 20%;">文件路径</th>
-                <th style="width: 18%;">歌词文件</th>
-                <th style="width: 22%;">歌词预览</th>
-                <th style="width: 10%;">操作</th>
+                <th style="width: 30%;">{{ text.song }}</th>
+                <th style="width: 20%;">{{ text.file_path }}</th>
+                <th style="width: 18%;">{{ text.lyric_file }}</th>
+                <th style="width: 22%;">{{ text.lyric_preview }}</th>
+                <th style="width: 10%;">{{ text.actions }}</th>
             </tr>
         </thead>
         <tbody>
@@ -122,7 +133,7 @@
                     <div class="song-title">{{ row.song.title }}</div>
                     <div class="song-artist">{{ row.song.artist }}</div>
                     <span class="badge {% if row.has_lrc_filename %}badge-mapped{% else %}badge-unmapped{% endif %}">
-                        {% if row.has_lrc_filename %}已映射{% else %}未映射{% endif %}
+                        {% if row.has_lrc_filename %}{{ text.mapped }}{% else %}{{ text.unmapped }}{% endif %}
                     </span>
                 </td>
                 <td class="song-path" title="{{ row.song.path }}">{{ row.song.path }}</td>
@@ -130,26 +141,26 @@
                     {% if row.has_lrc_filename %}
                     <div class="lrc-file">{{ row.lrc_filename }}</div>
                     {% else %}
-                    <div class="lrc-file empty">未映射</div>
+                    <div class="lrc-file empty">{{ text.unmapped }}</div>
                     {% endif %}
                 </td>
                 <td>
                     {% if row.has_lrc_preview %}
                     <div class="lrc-preview">{{ row.lrc_preview }}</div>
                     {% else %}
-                    <span style="color: #ccc;">暂无歌词</span>
+                    <span style="color: #ccc;">{{ text.no_lyrics }}</span>
                     {% endif %}
                 </td>
                 <td>
                     <div class="actions">
                         {% if row.has_lrc_filename %}
-                        <form action="/unmap" method="post" class="form-inline" onsubmit="return confirm('确定取消映射？')">
+                        <form action="/unmap" method="post" class="form-inline" onsubmit="return confirm('{{ text.confirm_unmap }}')">
                             <input type="hidden" name="song_path" value="{{ row.song.path }}">
-                            <button type="submit" class="btn btn-danger" style="padding: 6px 12px; font-size: 12px;">取消映射</button>
+                            <button type="submit" class="btn btn-danger" style="padding: 6px 12px; font-size: 12px;">{{ text.remove_mapping }}</button>
                         </form>
-                        <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="openMapModal('{{ row.song.path }}', '{{ row.song.title }}', '{{ row.song.artist }}', '{{ row.lrc_filename }}')">修改映射</button>
+                        <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="openMapModal('{{ row.song.path }}', '{{ row.song.title }}', '{{ row.song.artist }}', '{{ row.lrc_filename }}')">{{ text.edit_mapping }}</button>
                         {% else %}
-                        <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px;" onclick="openMapModal('{{ row.song.path }}', '{{ row.song.title }}', '{{ row.song.artist }}', '')">添加映射</button>
+                        <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px;" onclick="openMapModal('{{ row.song.path }}', '{{ row.song.title }}', '{{ row.song.artist }}', '')">{{ text.add_mapping }}</button>
                         {% endif %}
                     </div>
                 </td>
@@ -162,34 +173,34 @@
     <!-- Map Modal -->
     <div class="modal" id="mapModal">
         <div class="modal-content">
-            <h2 id="modalTitle">添加映射</h2>
+            <h2 id="modalTitle">{{ text.add_mapping }}</h2>
             <form id="mapForm" action="/map" method="post">
                 <input type="hidden" name="song_path" id="modalSongPath">
                 <div class="form-group">
-                    <label>标题</label>
+                    <label>{{ text.title }}</label>
                     <input type="text" name="title" id="modalTitleInput" required>
                 </div>
                 <div class="form-group">
-                    <label>艺术家</label>
+                    <label>{{ text.artist }}</label>
                     <input type="text" name="artist" id="modalArtistInput">
                 </div>
                 <div class="form-group">
-                    <label>歌词文件 (.lrc)</label>
+                    <label>{{ text.lyric_file }} (.lrc)</label>
                     <select name="lrc_filename" id="modalLrcSelect" required>
-                        <option value="">-- 选择歌词文件 --</option>
+                        <option value="">{{ text.select_lyric }}</option>
                         {% for lrc in lrc_files %}
                         <option value="{{ lrc }}">{{ lrc }}</option>
                         {% endfor %}
                     </select>
                     <div class="lrc-drop-zone" id="lrcDropZone" tabindex="0" role="button">
-                        <strong>拖入 .lrc 文件</strong>
-                        <span>或点击选择，可一次上传多个文件</span>
+                        <strong>{{ text.drop_lrc }}</strong>
+                        <span>{{ text.click_multiple }}</span>
                         <input type="file" id="lrcFileInput" accept=".lrc" multiple hidden>
                     </div>
                 </div>
                 <div class="modal-actions">
-                    <button type="button" class="btn btn-ghost" onclick="closeMapModal()">取消</button>
-                    <button type="submit" class="btn btn-primary">保存映射</button>
+                    <button type="button" class="btn btn-ghost" onclick="closeMapModal()">{{ text.cancel }}</button>
+                    <button type="submit" class="btn btn-primary">{{ text.save_mapping }}</button>
                 </div>
             </form>
         </div>
@@ -198,23 +209,24 @@
     <!-- Settings Modal -->
     <div class="modal" id="settingsModal">
         <div class="modal-content">
-            <h2>设置音乐目录</h2>
+            <h2>{{ text.settings }}</h2>
             <div id="settingsMessage"></div>
             <form id="settingsForm" action="/settings" method="post">
                 <div class="form-group">
-                    <label>音乐目录路径</label>
+                    <label>{{ text.music_directory_path }}</label>
                     <input type="text" name="music_dir" id="settingsMusicDir" value="{{ music_dir }}" placeholder="/path/to/music" required>
-                    <small>支持的格式: mp3, flac, wav, m4a, ogg, ape</small>
+                    <small>{{ text.supported_formats }}</small>
                 </div>
                 <div class="modal-actions">
-                    <button type="button" class="btn btn-ghost" onclick="closeSettingsModal()">取消</button>
-                    <button type="submit" class="btn btn-primary">保存设置</button>
+                    <button type="button" class="btn btn-ghost" onclick="closeSettingsModal()">{{ text.cancel }}</button>
+                    <button type="submit" class="btn btn-primary">{{ text.save_settings }}</button>
                 </div>
             </form>
         </div>
     </div>
 
     <script>
+        window.ctlyricsText = {{ client_text_json|safe }};
         var loadingProgressTimer;
         var uploadMessageTimer;
         var documentDragDepth = 0;
@@ -266,7 +278,7 @@
         async function uploadLyrics(files) {
             const lyrics = Array.from(files).filter(file => file.name.toLowerCase().endsWith('.lrc'));
             if (lyrics.length !== files.length || lyrics.length === 0) {
-                showUploadMessage('只能上传 .lrc 歌词文件', true);
+                showUploadMessage(window.ctlyricsText.upload_lrc_only, true);
                 return;
             }
 
@@ -291,9 +303,9 @@
                     }
                 });
                 select.value = result.files[0];
-                showUploadMessage(`已上传 ${result.files.length} 个歌词文件`);
+                showUploadMessage(window.ctlyricsText.uploaded_count.replace('{count}', result.files.length));
             } catch (error) {
-                showUploadMessage(error.message || '歌词上传失败', true);
+                showUploadMessage(error.message || window.ctlyricsText.upload_failed, true);
             } finally {
                 await finishLoadingProgress();
             }
@@ -304,7 +316,9 @@
             document.getElementById('modalTitleInput').value = title;
             document.getElementById('modalArtistInput').value = artist;
             document.getElementById('modalLrcSelect').value = currentLrc || '';
-            document.getElementById('modalTitle').textContent = currentLrc ? '修改映射' : '添加映射';
+            document.getElementById('modalTitle').textContent = currentLrc
+                ? window.ctlyricsText.edit_mapping
+                : window.ctlyricsText.add_mapping;
             document.getElementById('mapModal').classList.add('show');
         }
         function closeMapModal() {
@@ -402,7 +416,7 @@
                 }
             } catch (error) {
                 await finishLoadingProgress();
-                message.innerHTML = '<div class="message error">保存失败，请检查服务器状态</div>';
+                message.innerHTML = '<div class="message error">' + window.ctlyricsText.settings_save_failed + '</div>';
             }
         });
     </script>
