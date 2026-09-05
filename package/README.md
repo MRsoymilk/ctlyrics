@@ -26,5 +26,7 @@ Tool arguments and relative paths are evaluated from the caller's current
 working directory.
 
 The TUI system tray supports StatusNotifierItem hosts on Wayland and falls
-back to XEmbed on X11. GNOME requires an AppIndicator/KStatusNotifier shell
-extension. If no tray host is available, the TUI continues without an icon.
+back to XEmbed on X11. Its right-click menu scrolls the current song, artist,
+and playback status on one line. GNOME requires an
+AppIndicator/KStatusNotifier shell extension. If no tray host is available,
+the TUI continues without an icon.

@@ -65,7 +65,7 @@
   "help_mouse_wheel": "Wheel",
   "help_mouse_scroll": "Scroll this help page",
   "help_mouse_tray": "Tray right-click",
-  "help_mouse_tray_quit": "Open the menu and quit ctlyrics",
+  "help_mouse_tray_quit": "Show the current song and status, or quit ctlyrics",
   "help_footer": "↑/↓ j/k scroll  PgUp/PgDn page  Esc/h/? close  q quit",
   "page_title": "ctlyrics - Lyrics management",
   "loading": "Loading",

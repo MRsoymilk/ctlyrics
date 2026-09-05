@@ -72,8 +72,8 @@ async fn main() -> Result<()> {
         }
         _ => {
             let exit = ExitSignal::new();
-            let _tray = TrayService::start(locale, exit.clone());
-            run_tui(locale, exit)
+            let tray = TrayService::start(locale, exit.clone());
+            run_tui(locale, exit, &tray)
         }
     }
 }
@@ -127,7 +127,7 @@ fn locale_from_args() -> Locale {
     preferred_locale()
 }
 
-fn run_tui(locale: Locale, exit: ExitSignal) -> Result<()> {
+fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
     let mapping_store = MappingStore::load(&get_mapping_path()).unwrap_or_default();
 
     enable_raw_mode()?;
@@ -151,6 +151,7 @@ fn run_tui(locale: Locale, exit: ExitSignal) -> Result<()> {
             break;
         }
         let info = get_cmus_info().unwrap_or_default();
+        tray.update_playback(locale, &info.title, &info.artist, &info.status);
         let lyrics = lyrics_cache.load_lyrics(&info.title, Some(&info.artist), Some(&info.file));
 
         terminal.draw(|frame| player.draw(frame, &info, &lyrics))?;

@@ -1,7 +1,13 @@
+use std::fs;
+use std::process::Command;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
+use fontdue::{
+    Font, FontSettings,
+    layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle},
+};
 use x11rb::CURRENT_TIME;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
@@ -15,11 +21,15 @@ use x11rb::wrapper::ConnectionExt as _;
 
 use crate::i18n::{Locale, tr};
 
-use super::{ExitSignal, icon::rgba_icon};
+use super::{ExitSignal, PlaybackInfo, icon::rgba_icon};
 
 const ICON_SIZE: u16 = 24;
-const MENU_WIDTH: u16 = 104;
-const MENU_HEIGHT: u16 = 28;
+const MENU_WIDTH: u16 = 360;
+const MENU_HEIGHT: u16 = 58;
+const INFO_HEIGHT: u16 = 30;
+const MENU_PADDING: i32 = 12;
+const FONT_SIZE: f32 = 14.0;
+const SCROLL_GAP: i32 = 48;
 const SYSTEM_TRAY_REQUEST_DOCK: u32 = 0;
 const XEMBED_MAPPED: u32 = 1;
 
@@ -34,13 +44,33 @@ struct PixelFormat {
     blue_mask: u32,
 }
 
+struct RasterizedText {
+    width: usize,
+    height: usize,
+    alpha: Vec<u8>,
+}
+
+struct MenuContent {
+    playback: RasterizedText,
+    quit: RasterizedText,
+}
+
+impl MenuContent {
+    fn new(font: &Font, playback: &str, quit_label: &str) -> Self {
+        Self {
+            playback: rasterize_text(font, playback),
+            quit: rasterize_text(font, quit_label),
+        }
+    }
+}
+
 pub struct XEmbedTray {
     stop: ExitSignal,
     thread: Option<JoinHandle<()>>,
 }
 
 impl XEmbedTray {
-    pub fn start(locale: Locale, exit: ExitSignal) -> Result<Self> {
+    pub fn start(locale: Locale, exit: ExitSignal, playback: PlaybackInfo) -> Result<Self> {
         if std::env::var_os("DISPLAY").is_none() {
             return Err(anyhow!("DISPLAY is not set"));
         }
@@ -51,7 +81,7 @@ impl XEmbedTray {
         let thread = thread::Builder::new()
             .name("ctlyrics-xembed-tray".to_string())
             .spawn(move || {
-                let result = run_tray(locale, exit, thread_stop, ready_tx);
+                let result = run_tray(locale, exit, playback, thread_stop, ready_tx);
                 if let Err(error) = result {
                     tracing::debug!(%error, "XEmbed tray stopped");
                 }
@@ -107,6 +137,7 @@ fn dock(
 fn run_tray(
     locale: Locale,
     exit: ExitSignal,
+    playback: PlaybackInfo,
     stop: ExitSignal,
     ready: std::sync::mpsc::SyncSender<Result<()>>,
 ) -> Result<()> {
@@ -246,17 +277,32 @@ fn run_tray(
     connection.flush()?;
     let _ = ready.send(Ok(()));
 
-    let translated_label = tr(locale, "tray_quit");
-    let menu_label = if translated_label.is_ascii() {
-        translated_label.as_bytes()
-    } else {
-        b"Quit"
-    };
+    let quit_label = tr(locale, "tray_quit");
+    let mut playback_snapshot = playback.snapshot();
+    let mut menu_font = load_menu_font(&format!("{} {quit_label}", playback_snapshot.line));
+    let mut menu_content = menu_font
+        .as_ref()
+        .map(|font| MenuContent::new(font, &playback_snapshot.line, quit_label));
     let mut icon_width = ICON_SIZE;
     let mut icon_height = ICON_SIZE;
     let mut menu_open = false;
+    let mut menu_opened_at = Instant::now();
 
     while !stop.is_requested() && !exit.is_requested() {
+        let current_snapshot = playback.snapshot();
+        if current_snapshot.revision != playback_snapshot.revision {
+            playback_snapshot = current_snapshot;
+            if menu_font
+                .as_ref()
+                .is_none_or(|font| !font_supports(font, &playback_snapshot.line))
+            {
+                menu_font = load_menu_font(&format!("{} {quit_label}", playback_snapshot.line));
+            }
+            menu_content = menu_font
+                .as_ref()
+                .map(|font| MenuContent::new(font, &playback_snapshot.line, quit_label));
+            menu_opened_at = Instant::now();
+        }
         while let Some(event) = connection.poll_for_event()? {
             match event {
                 Event::Expose(event) if event.window == icon && event.count == 0 => {
@@ -270,7 +316,17 @@ fn run_tray(
                     )?;
                 }
                 Event::Expose(event) if event.window == menu && event.count == 0 => {
-                    draw_menu(&connection, menu, menu_gc, black, white, menu_label)?;
+                    draw_menu(
+                        &connection,
+                        menu,
+                        menu_gc,
+                        black,
+                        white,
+                        pixel_format,
+                        menu_content.as_ref(),
+                        &playback_snapshot.line,
+                        menu_opened_at.elapsed(),
+                    )?;
                 }
                 Event::ConfigureNotify(event) if event.window == icon => {
                     icon_width = event.width;
@@ -285,6 +341,18 @@ fn run_tray(
                     )?;
                 }
                 Event::ButtonPress(event) if event.event == icon && event.detail == 3 => {
+                    menu_opened_at = Instant::now();
+                    draw_menu(
+                        &connection,
+                        menu,
+                        menu_gc,
+                        black,
+                        white,
+                        pixel_format,
+                        menu_content.as_ref(),
+                        &playback_snapshot.line,
+                        menu_opened_at.elapsed(),
+                    )?;
                     open_menu(
                         &connection,
                         menu,
@@ -300,9 +368,10 @@ fn run_tray(
                         && event.event_y >= 0
                         && event.event_x < MENU_WIDTH as i16
                         && event.event_y < MENU_HEIGHT as i16;
+                    let quit_clicked = event.event_y >= INFO_HEIGHT as i16;
                     close_menu(&connection, menu)?;
                     menu_open = false;
-                    if event.detail == 1 && inside {
+                    if event.detail == 1 && inside && quit_clicked {
                         exit.request();
                     }
                 }
@@ -317,6 +386,19 @@ fn run_tray(
                 }
                 _ => {}
             }
+        }
+        if menu_open {
+            draw_menu(
+                &connection,
+                menu,
+                menu_gc,
+                black,
+                white,
+                pixel_format,
+                menu_content.as_ref(),
+                &playback_snapshot.line,
+                menu_opened_at.elapsed(),
+            )?;
         }
         thread::sleep(Duration::from_millis(20));
     }
@@ -359,6 +441,11 @@ fn draw_icon(
 }
 
 fn native_x11_image(width: u16, height: u16, format: PixelFormat) -> Result<Vec<u8>> {
+    let rgba = rgba_icon(u32::from(width), u32::from(height))?;
+    native_x11_pixels(&rgba, width, height, format)
+}
+
+fn native_x11_pixels(rgba: &[u8], width: u16, height: u16, format: PixelFormat) -> Result<Vec<u8>> {
     let bytes_per_pixel = match format.bits_per_pixel {
         16 => 2,
         24 => 3,
@@ -368,7 +455,6 @@ fn native_x11_image(width: u16, height: u16, format: PixelFormat) -> Result<Vec<
     let pad = usize::from(format.scanline_pad);
     let row_bits = usize::from(width) * usize::from(format.bits_per_pixel);
     let row_bytes = row_bits.div_ceil(pad) * pad / 8;
-    let rgba = rgba_icon(u32::from(width), u32::from(height))?;
     let mut output = vec![0; row_bytes * usize::from(height)];
 
     for (index, rgba_pixel) in rgba.as_chunks::<4>().0.iter().enumerate() {
@@ -406,14 +492,37 @@ fn encode_component(value: u32, mask: u32) -> u32 {
     (((value * maximum + 127) / 255) << shift) & mask
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_menu(
     connection: &RustConnection,
     window: Window,
     gc: u32,
     black: u32,
     white: u32,
-    label: &[u8],
+    format: PixelFormat,
+    content: Option<&MenuContent>,
+    playback: &str,
+    elapsed: Duration,
 ) -> Result<()> {
+    if let Some(content) = content {
+        let rgba = render_menu(content, elapsed);
+        let image = native_x11_pixels(&rgba, MENU_WIDTH, MENU_HEIGHT, format)?;
+        connection.put_image(
+            ImageFormat::Z_PIXMAP,
+            window,
+            gc,
+            MENU_WIDTH,
+            MENU_HEIGHT,
+            0,
+            0,
+            0,
+            format.depth,
+            &image,
+        )?;
+        connection.flush()?;
+        return Ok(());
+    }
+
     connection.change_gc(gc, &ChangeGCAux::new().foreground(black).background(black))?;
     connection.poly_fill_rectangle(
         window,
@@ -426,9 +535,208 @@ fn draw_menu(
         }],
     )?;
     connection.change_gc(gc, &ChangeGCAux::new().foreground(white).background(black))?;
-    connection.image_text8(window, gc, 12, 19, label)?;
+    let fallback: String = playback
+        .chars()
+        .map(
+            |character| {
+                if character.is_ascii() { character } else { ' ' }
+            },
+        )
+        .collect();
+    let fallback = fallback.trim().as_bytes();
+    connection.image_text8(window, gc, 12, 19, &fallback[..fallback.len().min(54)])?;
+    connection.image_text8(window, gc, 12, 49, b"Quit")?;
     connection.flush()?;
     Ok(())
+}
+
+fn load_menu_font(sample: &str) -> Option<Font> {
+    let pattern = sample
+        .chars()
+        .find(|character| !character.is_ascii() && !character.is_whitespace())
+        .map(|character| format!(":charset={:x}", character as u32))
+        .unwrap_or_else(|| "sans-serif".to_string());
+    let matched = Command::new("fc-match")
+        .args(["-f", "%{file}\t%{index}\n", &pattern])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|output| {
+            let (path, index) = output.lines().next()?.split_once('\t')?;
+            Some((path.to_string(), index.parse().unwrap_or(0)))
+        });
+    let fonts = matched.into_iter().chain([
+        (
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".to_string(),
+            0,
+        ),
+        ("/usr/share/fonts/TTF/DejaVuSans.ttf".to_string(), 0),
+    ]);
+
+    for (path, collection_index) in fonts {
+        let Ok(data) = fs::read(path) else {
+            continue;
+        };
+        let settings = FontSettings {
+            collection_index,
+            ..Default::default()
+        };
+        if let Ok(font) = Font::from_bytes(data, settings) {
+            return Some(font);
+        }
+    }
+    None
+}
+
+fn font_supports(font: &Font, text: &str) -> bool {
+    text.chars()
+        .filter(|character| !character.is_whitespace())
+        .all(|character| font.lookup_glyph_index(character) != 0)
+}
+
+fn render_menu(content: &MenuContent, elapsed: Duration) -> Vec<u8> {
+    let mut pixels = vec![0; usize::from(MENU_WIDTH) * usize::from(MENU_HEIGHT) * 4];
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        pixel[3] = 255;
+    }
+
+    let viewport_width = i32::from(MENU_WIDTH) - MENU_PADDING * 2;
+    let text_width = content.playback.width as i32;
+    let scroll = if text_width > viewport_width {
+        (elapsed.as_millis() / 35) as i32 % (text_width + SCROLL_GAP)
+    } else {
+        0
+    };
+    blit_scrolling_text(&mut pixels, &content.playback, scroll, 5, [210, 210, 210]);
+
+    let separator = usize::from(INFO_HEIGHT) * usize::from(MENU_WIDTH) * 4;
+    for x in 0..usize::from(MENU_WIDTH) {
+        let offset = separator + x * 4;
+        pixels[offset..offset + 3].copy_from_slice(&[70, 70, 70]);
+    }
+    blit_text(
+        &mut pixels,
+        &content.quit,
+        MENU_PADDING,
+        i32::from(INFO_HEIGHT) + 4,
+        [255, 255, 255],
+    );
+    pixels
+}
+
+fn rasterize_text(font: &Font, text: &str) -> RasterizedText {
+    let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+    layout.reset(&LayoutSettings::default());
+    layout.append(&[font], &TextStyle::new(text, FONT_SIZE, 0));
+    let width = layout
+        .glyphs()
+        .iter()
+        .map(|glyph| glyph.x.ceil() as usize + glyph.width)
+        .max()
+        .unwrap_or(0);
+    let height = layout
+        .glyphs()
+        .iter()
+        .map(|glyph| glyph.y.ceil() as usize + glyph.height)
+        .max()
+        .unwrap_or(0);
+    let mut alpha = vec![0; width * height];
+    for glyph in layout.glyphs() {
+        let (_, bitmap) = font.rasterize_config(glyph.key);
+        for y in 0..glyph.height {
+            let destination_y = glyph.y.ceil() as usize + y;
+            for x in 0..glyph.width {
+                let destination_x = glyph.x.ceil() as usize + x;
+                let destination = destination_y * width + destination_x;
+                alpha[destination] = alpha[destination].max(bitmap[y * glyph.width + x]);
+            }
+        }
+    }
+    RasterizedText {
+        width,
+        height,
+        alpha,
+    }
+}
+
+fn blit_scrolling_text(
+    pixels: &mut [u8],
+    text: &RasterizedText,
+    scroll: i32,
+    offset_y: i32,
+    color: [u8; 3],
+) {
+    let viewport_width = i32::from(MENU_WIDTH) - MENU_PADDING * 2;
+    let cycle_width = text.width as i32 + SCROLL_GAP;
+    for destination_x in 0..viewport_width {
+        let source_x = if text.width as i32 > viewport_width {
+            (scroll + destination_x) % cycle_width
+        } else {
+            destination_x
+        };
+        if source_x < text.width as i32 {
+            blit_column(
+                pixels,
+                text,
+                source_x as usize,
+                MENU_PADDING + destination_x,
+                offset_y,
+                0,
+                INFO_HEIGHT,
+                color,
+            );
+        }
+    }
+}
+
+fn blit_text(
+    pixels: &mut [u8],
+    text: &RasterizedText,
+    offset_x: i32,
+    offset_y: i32,
+    color: [u8; 3],
+) {
+    for source_x in 0..text.width {
+        blit_column(
+            pixels,
+            text,
+            source_x,
+            offset_x + source_x as i32,
+            offset_y,
+            INFO_HEIGHT,
+            MENU_HEIGHT,
+            color,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blit_column(
+    pixels: &mut [u8],
+    text: &RasterizedText,
+    source_x: usize,
+    destination_x: i32,
+    offset_y: i32,
+    clip_top: u16,
+    clip_bottom: u16,
+    color: [u8; 3],
+) {
+    if destination_x < MENU_PADDING || destination_x >= i32::from(MENU_WIDTH) - MENU_PADDING {
+        return;
+    }
+    for source_y in 0..text.height {
+        let destination_y = offset_y + source_y as i32;
+        if destination_y < i32::from(clip_top) || destination_y >= i32::from(clip_bottom) {
+            continue;
+        }
+        let alpha = u16::from(text.alpha[source_y * text.width + source_x]);
+        let offset =
+            (destination_y as usize * usize::from(MENU_WIDTH) + destination_x as usize) * 4;
+        for channel in 0..3 {
+            pixels[offset + channel] = (u16::from(color[channel]) * alpha / 255) as u8;
+        }
+    }
 }
 
 fn open_menu(

@@ -33,7 +33,7 @@ web mode:
 - Load and expand complete lyric previews on demand
 - Use light, dark, or system web themes
 - Use English or Simplified Chinese in the Web UI, TUI, and CLI
-- Show a system tray icon while the TUI runs, with a right-click quit action
+- Show a system tray icon while the TUI runs; its right-click menu scrolls the current song, artist, and playback status on one line and provides a quit action
 
 ## Requirements
 
@@ -102,7 +102,7 @@ Artifacts are written to `package/dist/`. The AppImage bundles the three Python 
 
 The tools invoke the host's `python3` directly without checking whether it is installed. The host must also provide `cmus` and `cmus-remote`. See [`package/README.md`](package/README.md) for packaging details.
 
-On Linux, the tray prefers StatusNotifierItem for KDE Plasma and Waybar, then falls back to XEmbed on X11 desktops such as AwesomeWM. GNOME Wayland requires an AppIndicator/KStatusNotifier extension. The lyrics interface continues to work when no tray host is available.
+On Linux, the tray prefers StatusNotifierItem for KDE Plasma and Waybar, then falls back to XEmbed on X11 desktops such as AwesomeWM. The right-click menu shows the current song, artist, and playback status on one line and scrolls content that exceeds its width. GNOME Wayland requires an AppIndicator/KStatusNotifier extension. The lyrics interface continues to work when no tray host is available.
 
 Select the interface language:
 
