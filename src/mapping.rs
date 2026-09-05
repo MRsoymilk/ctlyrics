@@ -139,10 +139,10 @@ pub fn list_lrc_files() -> Result<Vec<String>, MappingError> {
     let mut files = Vec::new();
     if let Ok(entries) = fs::read_dir("lyrics") {
         for entry in entries.flatten() {
-            if entry.path().extension().is_some_and(|e| e == "lrc") {
-                if let Some(name) = entry.file_name().to_str() {
-                    files.push(name.to_string());
-                }
+            if entry.path().extension().is_some_and(|e| e == "lrc")
+                && let Some(name) = entry.file_name().to_str()
+            {
+                files.push(name.to_string());
             }
         }
     }

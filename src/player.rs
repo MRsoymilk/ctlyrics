@@ -603,8 +603,7 @@ impl Player {
         let end_line = (start_line + visible_lines).min(lyrics.len());
 
         let mut text = Vec::new();
-        for i in start_line..end_line {
-            let line = &lyrics[i];
+        for (i, line) in lyrics.iter().enumerate().take(end_line).skip(start_line) {
             let style = if i == current_line {
                 Style::default()
                     .fg(Color::Green)
