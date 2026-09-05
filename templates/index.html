@@ -87,7 +87,7 @@
         .directory-label { color: var(--accent-strong); font: 700 10px/1 ui-monospace, monospace; letter-spacing: 0.12em; text-transform: uppercase; }
         .directory-value { min-width: 0; overflow: hidden; color: var(--ink); font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
         .directory-inline.empty { border-left-color: var(--warning); background: var(--warning-soft); }
-        .toolbar { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+        .toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; align-items: center; gap: 12px; margin-bottom: 18px; }
         .search-box { position: relative; flex: 1; }
         .search-box::before { position: absolute; top: 50%; left: 15px; width: 8px; height: 8px; border: 1.5px solid var(--muted); border-radius: 50%; content: ""; transform: translateY(-65%); pointer-events: none; }
         .search-box::after { position: absolute; top: 54%; left: 24px; width: 6px; height: 1.5px; background: var(--muted); content: ""; transform: rotate(45deg); pointer-events: none; }
@@ -95,6 +95,12 @@
         .search-box input::placeholder { color: var(--faint); }
         .search-box input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
         .song-count { flex: none; color: var(--muted); font: 650 12px/1 ui-monospace, monospace; letter-spacing: 0.04em; }
+        .mapping-filters { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); box-shadow: var(--shadow-small); }
+        .filter-button { display: inline-flex; min-height: 34px; align-items: center; gap: 6px; padding: 6px 10px; border: 0; border-radius: 7px; color: var(--muted); background: transparent; font-size: 11px; font-weight: 700; cursor: pointer; }
+        .filter-button:hover { color: var(--ink); background: var(--surface-raised); }
+        .filter-button.active { color: var(--surface-raised); background: var(--accent-strong); }
+        .filter-count { min-width: 18px; padding: 2px 5px; border-radius: 999px; color: inherit; background: color-mix(in srgb, currentColor 12%, transparent); font: 700 9px/1 ui-monospace, monospace; text-align: center; }
+        .filter-button.active .filter-count { background: color-mix(in srgb, var(--surface-raised) 20%, transparent); }
         .table-shell { overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-raised); box-shadow: var(--shadow); }
         table { width: 100%; border-collapse: collapse; }
         th, td { padding: 17px 18px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
@@ -108,7 +114,12 @@
         .lrc-file { color: var(--accent-strong); font-size: 12px; font-weight: 700; word-break: break-word; }
         .lrc-file.empty { color: var(--faint); font-style: italic; font-weight: 500; }
         .no-lyrics { color: var(--faint); font-size: 12px; }
-        .lrc-preview { max-height: 82px; overflow: auto; padding: 9px 11px; border-left: 2px solid var(--line-strong); color: var(--muted); background: var(--surface-soft); font: 11px/1.5 ui-monospace, monospace; white-space: pre-wrap; }
+        .lrc-preview { position: relative; padding: 9px 11px 7px; border-left: 2px solid var(--line-strong); color: var(--muted); background: var(--surface-soft); font: 11px/1.5 ui-monospace, monospace; }
+        .lrc-preview-text { max-height: 82px; overflow: hidden; white-space: pre-wrap; }
+        .lrc-preview:not(.expanded) .lrc-preview-text { mask-image: linear-gradient(to bottom, #000 55%, transparent); }
+        .lrc-preview.expanded .lrc-preview-text { max-height: none; overflow: visible; mask-image: none; }
+        .lyrics-toggle { margin-top: 5px; padding: 2px 0; border: 0; color: var(--accent-strong); background: transparent; font: 700 10px/1.4 ui-monospace, monospace; cursor: pointer; }
+        .lyrics-toggle:hover { text-decoration: underline; }
         .actions { display: flex; flex-wrap: wrap; gap: 7px; }
         .form-inline { display: inline; }
         .btn { display: inline-flex; min-height: 34px; align-items: center; justify-content: center; padding: 7px 12px; border: 1px solid transparent; border-radius: 8px; font-size: 12px; font-weight: 700; text-decoration: none; cursor: pointer; transition: transform 0.16s, background 0.16s, border-color 0.16s, color 0.16s; }
@@ -167,6 +178,8 @@
             .control-group + .control-group { padding-left: 3px; }
             th, td { padding: 14px 12px; }
             .song-path { max-width: 180px; }
+            .toolbar { grid-template-columns: minmax(180px, 1fr) auto; }
+            .song-count { grid-column: 1 / -1; }
         }
         @media (max-width: 720px) {
             .app-shell { width: min(100% - 20px, 680px); padding: 18px 0 36px; }
@@ -174,7 +187,9 @@
             .brand-kicker, .control-label { display: block; }
             .control-deck { box-shadow: none; }
             .directory-inline { grid-column: 1 / -1; grid-row: 2; }
-            .toolbar { align-items: stretch; flex-direction: column; }
+            .toolbar { grid-template-columns: 1fr; align-items: stretch; }
+            .mapping-filters { width: 100%; }
+            .filter-button { flex: 1; justify-content: center; }
             .song-count { padding-left: 2px; }
             .table-shell { overflow: visible; border: 0; background: transparent; box-shadow: none; }
             table, tbody { display: block; }
@@ -262,6 +277,17 @@
         <form class="search-box" id="searchForm" role="search">
             <input type="search" id="searchInput" name="q" placeholder="{{ text.search_placeholder }}" value="{{ search }}" autocomplete="off">
         </form>
+        <div class="mapping-filters" role="group" aria-label="{{ text.filter_status }}">
+            <button type="button" class="filter-button active" data-mapping-filter="all" aria-pressed="true">
+                {{ text.filter_all }} <span class="filter-count">{{ songs.len() }}</span>
+            </button>
+            <button type="button" class="filter-button" data-mapping-filter="mapped" aria-pressed="false">
+                {{ text.mapped }} <span class="filter-count">{{ mapped_count }}</span>
+            </button>
+            <button type="button" class="filter-button" data-mapping-filter="unmapped" aria-pressed="false">
+                {{ text.unmapped }} <span class="filter-count">{{ unmapped_count }}</span>
+            </button>
+        </div>
         <span class="song-count" id="songCount">{{ songs.len() }} {{ text.song_count }}</span>
     </div>
 
@@ -287,7 +313,7 @@
         </thead>
         <tbody>
             {% for row in songs %}
-            <tr data-song-row data-search="{{ row.song.title }} {{ row.song.artist }} {{ row.song.path }}">
+            <tr data-song-row data-search="{{ row.song.title }} {{ row.song.artist }} {{ row.song.path }}" data-mapping="{% if row.has_lrc_filename %}mapped{% else %}unmapped{% endif %}">
                 <td data-label="{{ text.song }}">
                     <div class="song-title">{{ row.song.title }}</div>
                     <div class="song-artist">{{ row.song.artist }}</div>
@@ -305,7 +331,12 @@
                 </td>
                 <td data-label="{{ text.lyric_preview }}">
                     {% if row.has_lrc_preview %}
-                    <div class="lrc-preview">{{ row.lrc_preview }}</div>
+                    <div class="lrc-preview">
+                        <div class="lrc-preview-text">{{ row.lrc_preview }}</div>
+                        {% if row.has_more_lyrics %}
+                        <button type="button" class="lyrics-toggle" data-lyrics-toggle data-lrc-filename="{{ row.lrc_filename }}" data-expand-label="{{ text.expand_lyrics }}" data-collapse-label="{{ text.collapse_lyrics }}" data-loading-label="{{ text.loading }}" data-error-label="{{ text.lyrics_load_failed }}" aria-expanded="false">{{ text.expand_lyrics }}</button>
+                        {% endif %}
+                    </div>
                     {% else %}
                     <span class="no-lyrics">{{ text.no_lyrics }}</span>
                     {% endif %}
@@ -401,6 +432,9 @@
         var songCount = document.getElementById('songCount');
         var searchEmpty = document.getElementById('searchEmpty');
         var songsTable = document.getElementById('songsTable');
+        var mappingFilterButtons = document.querySelectorAll('[data-mapping-filter]');
+        var initialMappingFilter = new URL(window.location.href).searchParams.get('mapping');
+        var mappingFilter = ['mapped', 'unmapped'].includes(initialMappingFilter) ? initialMappingFilter : 'all';
 
         function applyTheme(preference, persist = true) {
             const selected = ['auto', 'light', 'dark'].includes(preference) ? preference : 'auto';
@@ -429,7 +463,9 @@
             let visible = 0;
 
             rows.forEach(row => {
-                const matches = row.dataset.search.toLocaleLowerCase().includes(query);
+                const matchesSearch = row.dataset.search.toLocaleLowerCase().includes(query);
+                const matchesMapping = mappingFilter === 'all' || row.dataset.mapping === mappingFilter;
+                const matches = matchesSearch && matchesMapping;
                 row.hidden = !matches;
                 if (matches) visible += 1;
             });
@@ -444,11 +480,55 @@
             } else {
                 url.searchParams.delete('q');
             }
+            if (mappingFilter === 'all') {
+                url.searchParams.delete('mapping');
+            } else {
+                url.searchParams.set('mapping', mappingFilter);
+            }
             history.replaceState(null, '', url);
         }
 
         searchForm.addEventListener('submit', event => event.preventDefault());
         searchInput.addEventListener('input', filterSongs);
+        mappingFilterButtons.forEach(button => {
+            const active = button.dataset.mappingFilter === mappingFilter;
+            button.classList.toggle('active', active);
+            button.setAttribute('aria-pressed', active);
+            button.addEventListener('click', () => {
+                mappingFilter = button.dataset.mappingFilter;
+                mappingFilterButtons.forEach(candidate => {
+                    const selected = candidate === button;
+                    candidate.classList.toggle('active', selected);
+                    candidate.setAttribute('aria-pressed', selected);
+                });
+                filterSongs();
+            });
+        });
+        document.querySelectorAll('[data-lyrics-toggle]').forEach(button => {
+            const preview = button.closest('.lrc-preview');
+            const text = preview.querySelector('.lrc-preview-text');
+            button.addEventListener('click', async () => {
+                if (!preview.dataset.loaded) {
+                    button.disabled = true;
+                    button.textContent = button.dataset.loadingLabel;
+                    try {
+                        const response = await fetch('/api/lrc/' + encodeURIComponent(button.dataset.lrcFilename));
+                        if (!response.ok) throw new Error(response.statusText);
+                        text.textContent = await response.text();
+                        preview.dataset.loaded = 'true';
+                    } catch (_) {
+                        showUploadMessage(button.dataset.errorLabel, true);
+                        button.textContent = button.dataset.expandLabel;
+                        button.disabled = false;
+                        return;
+                    }
+                    button.disabled = false;
+                }
+                const expanded = preview.classList.toggle('expanded');
+                button.textContent = expanded ? button.dataset.collapseLabel : button.dataset.expandLabel;
+                button.setAttribute('aria-expanded', expanded);
+            });
+        });
         filterSongs();
 
         function startLoadingProgress() {
