@@ -89,6 +89,7 @@ Select the interface language:
 | Key | Action |
 |---|---|
 | `q` | Quit |
+| `Ctrl+C` | Quit safely and restore the terminal state |
 | `Space` | Play / pause |
 | `n` | Next track |
 | `p` | Previous track |

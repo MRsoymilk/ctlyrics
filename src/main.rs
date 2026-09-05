@@ -29,14 +29,15 @@ mod tests {
 use anyhow::Result;
 use clap::{Arg, ArgAction, Command};
 use crossterm::{
-    cursor::MoveTo,
+    cursor::{MoveTo, Show},
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
     execute,
+    style::Print,
     terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::Terminal;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::time::Duration;
 
 use crate::cmus::get_cmus_info;
@@ -153,6 +154,7 @@ fn run_tui(locale: Locale) -> Result<()> {
     let mapping_store = MappingStore::load(&crate::mapping::get_mapping_path()).unwrap_or_default();
 
     enable_raw_mode()?;
+    let _terminal_guard = TerminalGuard;
     let mut stdout = io::stdout();
     execute!(
         stdout,
@@ -190,11 +192,28 @@ fn run_tui(locale: Locale) -> Result<()> {
         }
     }
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), DisableMouseCapture)?;
-    terminal.show_cursor()?;
-
     Ok(())
+}
+
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let row = crossterm::terminal::size()
+            .map(|(_, height)| height.saturating_sub(1))
+            .unwrap_or(0);
+        let mut stdout = io::stdout();
+        let _ = execute!(
+            stdout,
+            DisableMouseCapture,
+            Show,
+            MoveTo(0, row),
+            Clear(ClearType::CurrentLine),
+            Print("\r\n")
+        );
+        let _ = stdout.flush();
+    }
 }
 
 async fn run_web(port: u16, locale: Locale) -> Result<()> {

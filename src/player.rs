@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use open;
 use ratatui::{
     Frame,
@@ -55,6 +55,9 @@ impl Player {
     }
 
     pub fn handle_input(&mut self, key: KeyEvent) -> bool {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return true;
+        }
         if self.command_mode {
             match key.code {
                 KeyCode::Enter => {
@@ -484,6 +487,15 @@ mod tests {
             player.handle_input(KeyEvent::new(key, KeyModifiers::NONE));
             assert!(!player.command_mode);
             assert!(player.command_buffer.is_empty());
+        }
+    }
+
+    #[test]
+    fn control_c_requests_a_clean_exit_in_any_mode() {
+        for command_mode in [false, true] {
+            let mut player = Player::new(Locale::En);
+            player.command_mode = command_mode;
+            assert!(player.handle_input(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL,)));
         }
     }
 
