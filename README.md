@@ -1,4 +1,12 @@
-# ctlyrics
+<p align="center">
+  <img src="res/logo_icon.png" alt="ctlyrics icon" width="120">
+  <br>
+  <img src="res/logo_font.png" alt="ctlyrics" width="300">
+</p>
+
+<p align="center">
+  <strong>简体中文</strong> · <a href="README.en.md">English</a>
+</p>
 
 `ctlyrics` 是一个配合 [cmus](https://cmus.github.io/) 使用的终端歌词显示程序。它通过 `cmus-remote -Q` 获取当前歌曲和播放进度，读取 LRC 文件并同步显示歌词。
 
@@ -16,6 +24,8 @@
 - 网页支持拖拽上传一个或多个 `.lrc` 文件
 - 网页保存音乐目录时显示加载进度
 - 网页修改映射后，终端自动重新加载映射配置
+- 网页统计并筛选已映射、未映射歌曲，筛选可与即时搜索组合使用
+- 歌词预览支持按需加载并展开完整歌词
 - Web 支持亮色、暗色和跟随系统主题
 - 支持英文和简体中文，可在 Web、TUI 和 CLI 中切换
 
@@ -293,6 +303,9 @@ templates/
 locales/
   en.json          英文语言资源
   zh-CN.json       简体中文语言资源
+res/
+  logo_icon.png    应用图标
+  logo_font.png    品牌字标
 tools/
   get_songs_from_directory.py  从音乐目录生成歌曲列表
   get_lyrics.py                 搜索并下载 LRC 歌词

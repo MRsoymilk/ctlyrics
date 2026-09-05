@@ -9,7 +9,7 @@ use axum::{
     extract::{DefaultBodyLimit, Form, Multipart, Path, Query, State},
     http::HeaderMap,
     http::StatusCode,
-    http::header::{ACCEPT_LANGUAGE, COOKIE, SET_COOKIE},
+    http::header::{ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_TYPE, COOKIE, SET_COOKIE},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
@@ -30,6 +30,8 @@ struct IndexTemplate {
     music_dir: String,
     has_music_dir: bool,
     songs: Vec<SongRow>,
+    mapped_count: usize,
+    unmapped_count: usize,
     search: String,
     lrc_files: Vec<String>,
 }
@@ -46,6 +48,11 @@ struct WebText {
     song_count: &'static str,
     no_audio_files: &'static str,
     no_search_results: &'static str,
+    filter_status: &'static str,
+    filter_all: &'static str,
+    expand_lyrics: &'static str,
+    collapse_lyrics: &'static str,
+    lyrics_load_failed: &'static str,
     configure_first: &'static str,
     song: &'static str,
     file_path: &'static str,
@@ -95,6 +102,11 @@ impl WebText {
             song_count: tr(locale, "song_count"),
             no_audio_files: tr(locale, "no_audio_files"),
             no_search_results: tr(locale, "no_search_results"),
+            filter_status: tr(locale, "filter_status"),
+            filter_all: tr(locale, "filter_all"),
+            expand_lyrics: tr(locale, "expand_lyrics"),
+            collapse_lyrics: tr(locale, "collapse_lyrics"),
+            lyrics_load_failed: tr(locale, "lyrics_load_failed"),
             configure_first: tr(locale, "configure_first"),
             song: tr(locale, "song"),
             file_path: tr(locale, "file_path"),
@@ -151,6 +163,7 @@ struct SongRow {
     lrc_filename: String,
     has_lrc_filename: bool,
     has_lrc_preview: bool,
+    has_more_lyrics: bool,
 }
 
 #[derive(Deserialize)]
@@ -201,9 +214,31 @@ pub fn create_router() -> Router {
         .route("/unmap", post(remove_mapping))
         .route("/api/lrc/upload", post(upload_lrc))
         .route("/api/lrc/:filename", get(get_lrc_content))
+        .route("/assets/logo_icon.png", get(logo_icon))
+        .route("/assets/logo_font.png", get(logo_font))
         .nest_service("/static", ServeDir::new("static"))
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(store)
+}
+
+async fn logo_icon() -> impl IntoResponse {
+    (
+        [
+            (CONTENT_TYPE, "image/png"),
+            (CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_bytes!("../res/logo_icon.png").as_slice(),
+    )
+}
+
+async fn logo_font() -> impl IntoResponse {
+    (
+        [
+            (CONTENT_TYPE, "image/png"),
+            (CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_bytes!("../res/logo_font.png").as_slice(),
+    )
 }
 
 async fn index(
@@ -230,12 +265,13 @@ async fn index(
                     .as_ref()
                     .map(|m| m.lrc_filename.clone())
                     .unwrap_or_default();
-                let lrc_preview = mapping
+                let (lrc_preview, has_more_lyrics) = mapping
                     .as_ref()
                     .and_then(|m| read_lrc_content(&m.lrc_filename).ok())
                     .map(|content| {
-                        let lines: Vec<&str> = content.lines().take(5).collect();
-                        lines.join("\n")
+                        let mut lines = content.lines();
+                        let preview = lines.by_ref().take(5).collect::<Vec<_>>().join("\n");
+                        (preview, lines.next().is_some())
                     })
                     .unwrap_or_default();
                 let has_lrc_filename = !lrc_filename.is_empty();
@@ -247,6 +283,7 @@ async fn index(
                     lrc_filename,
                     has_lrc_filename,
                     has_lrc_preview,
+                    has_more_lyrics,
                 }
             })
             .collect();
@@ -254,6 +291,8 @@ async fn index(
     } else {
         (Vec::new(), Vec::new())
     };
+    let mapped_count = songs.iter().filter(|row| row.has_lrc_filename).count();
+    let unmapped_count = songs.len() - mapped_count;
 
     let template = IndexTemplate {
         locale: locale.code(),
@@ -274,6 +313,8 @@ async fn index(
         music_dir: music_dir_str,
         has_music_dir,
         songs,
+        mapped_count,
+        unmapped_count,
         search,
         lrc_files,
     };
