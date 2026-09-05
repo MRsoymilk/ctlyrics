@@ -42,6 +42,9 @@ struct PlaybackInfo(Arc<RwLock<PlaybackSnapshot>>);
 #[derive(Clone, Default)]
 struct PlaybackSnapshot {
     line: String,
+    status: String,
+    position: u64,
+    duration: u64,
     revision: u64,
 }
 
@@ -49,18 +52,24 @@ impl PlaybackInfo {
     fn new(locale: Locale) -> Self {
         Self(Arc::new(RwLock::new(PlaybackSnapshot {
             line: playback_line(locale, "", "", "stopped"),
+            status: "stopped".to_string(),
+            position: 0,
+            duration: 0,
             revision: 0,
         })))
     }
 
-    fn update(&self, line: String) -> bool {
+    fn update(&self, line: String, status: &str, position: u64, duration: u64) -> bool {
         let mut snapshot = self.0.write().unwrap_or_else(|error| error.into_inner());
-        if snapshot.line == line {
-            return false;
+        let changed = snapshot.line != line || snapshot.status != status;
+        if changed {
+            snapshot.line = line;
+            snapshot.status = status.to_string();
+            snapshot.revision = snapshot.revision.wrapping_add(1);
         }
-        snapshot.line = line;
-        snapshot.revision = snapshot.revision.wrapping_add(1);
-        true
+        snapshot.position = position.min(duration);
+        snapshot.duration = duration;
+        changed
     }
 
     fn snapshot(&self) -> PlaybackSnapshot {
@@ -117,6 +126,20 @@ pub fn marquee_text(text: &str, width: usize, step: usize) -> String {
     output
 }
 
+pub fn progress_offset(position: u64, duration: u64, width: u16) -> u16 {
+    if duration == 0 {
+        return 0;
+    }
+    ((u64::from(width) * position.min(duration)) / duration) as u16
+}
+
+pub fn seek_from_progress(offset: u16, width: u16, duration: u64) -> u64 {
+    if width == 0 {
+        return 0;
+    }
+    (u64::from(offset.min(width)) * duration / u64::from(width)).min(duration)
+}
+
 #[cfg(target_os = "linux")]
 enum Backend {
     Sni(sni::SniTray),
@@ -164,11 +187,22 @@ impl TrayService {
         }
     }
 
-    pub fn update_playback(&self, locale: Locale, title: &str, artist: &str, status: &str) {
-        if !self
-            .playback
-            .update(playback_line(locale, title, artist, status))
-        {
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_playback(
+        &self,
+        locale: Locale,
+        title: &str,
+        artist: &str,
+        status: &str,
+        position: u64,
+        duration: u64,
+    ) {
+        if !self.playback.update(
+            playback_line(locale, title, artist, status),
+            status,
+            position,
+            duration,
+        ) {
             return;
         }
 

@@ -151,7 +151,14 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
             break;
         }
         let info = get_cmus_info().unwrap_or_default();
-        tray.update_playback(locale, &info.title, &info.artist, &info.status);
+        tray.update_playback(
+            locale,
+            &info.title,
+            &info.artist,
+            &info.status,
+            info.position,
+            info.duration,
+        );
         let lyrics = lyrics_cache.load_lyrics(&info.title, Some(&info.artist), Some(&info.file));
 
         terminal.draw(|frame| player.draw(frame, &info, &lyrics))?;

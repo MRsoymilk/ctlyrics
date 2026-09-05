@@ -19,17 +19,38 @@ use x11rb::protocol::xproto::{
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
+use crate::cmus::{PlaybackCommand, control_cmus, seek_cmus};
 use crate::i18n::{Locale, tr};
 
-use super::{ExitSignal, PlaybackInfo, icon::rgba_icon};
+use super::{
+    ExitSignal, PlaybackInfo, PlaybackSnapshot, icon::rgba_icon, progress_offset,
+    seek_from_progress,
+};
 
 const ICON_SIZE: u16 = 24;
 const MENU_WIDTH: u16 = 360;
-const MENU_HEIGHT: u16 = 58;
-const INFO_HEIGHT: u16 = 30;
+const MENU_HEIGHT: u16 = 130;
 const MENU_PADDING: i32 = 12;
 const FONT_SIZE: f32 = 14.0;
 const SCROLL_GAP: i32 = 48;
+const PANEL_X: i16 = 8;
+const PANEL_Y: i16 = 7;
+const PANEL_WIDTH: u16 = 344;
+const PANEL_HEIGHT: u16 = 84;
+const TITLE_TOP: u16 = 9;
+const TITLE_BOTTOM: u16 = 36;
+const PROGRESS_X: i16 = 34;
+const PROGRESS_Y: i16 = 43;
+const PROGRESS_WIDTH: u16 = 292;
+const PROGRESS_HEIGHT: u16 = 5;
+const CONTROL_TOP: i16 = 54;
+const CONTROL_HEIGHT: u16 = 31;
+const CONTROL_WIDTH: u16 = 44;
+const PREVIOUS_X: i16 = 108;
+const TOGGLE_X: i16 = 158;
+const NEXT_X: i16 = 208;
+const SEPARATOR_Y: u16 = 97;
+const QUIT_TOP: u16 = 98;
 const SYSTEM_TRAY_REQUEST_DOCK: u32 = 0;
 const XEMBED_MAPPED: u32 = 1;
 const XK_ESCAPE: u32 = 0xff1b;
@@ -54,6 +75,14 @@ struct RasterizedText {
 struct MenuContent {
     playback: RasterizedText,
     quit: RasterizedText,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MenuTarget {
+    Previous,
+    Toggle,
+    Next,
+    Quit,
 }
 
 impl MenuContent {
@@ -293,25 +322,25 @@ fn run_tray(
     let mut icon_width = ICON_SIZE;
     let mut icon_height = ICON_SIZE;
     let mut menu_open = false;
-    let mut quit_hovered = false;
+    let mut hovered = None;
     let mut menu_opened_at = Instant::now();
     let escape_keycodes = escape_keycodes(&connection)?;
 
     while !stop.is_requested() && !exit.is_requested() {
         let current_snapshot = playback.snapshot();
         if current_snapshot.revision != playback_snapshot.revision {
-            playback_snapshot = current_snapshot;
             if menu_font
                 .as_ref()
-                .is_none_or(|font| !font_supports(font, &playback_snapshot.line))
+                .is_none_or(|font| !font_supports(font, &current_snapshot.line))
             {
-                menu_font = load_menu_font(&format!("{} {quit_label}", playback_snapshot.line));
+                menu_font = load_menu_font(&format!("{} {quit_label}", current_snapshot.line));
             }
             menu_content = menu_font
                 .as_ref()
-                .map(|font| MenuContent::new(font, &playback_snapshot.line, quit_label));
+                .map(|font| MenuContent::new(font, &current_snapshot.line, quit_label));
             menu_opened_at = Instant::now();
         }
+        playback_snapshot = current_snapshot;
         while let Some(event) = connection.poll_for_event()? {
             match event {
                 Event::Expose(event) if event.window == icon && event.count == 0 => {
@@ -333,9 +362,9 @@ fn run_tray(
                         white,
                         pixel_format,
                         menu_content.as_ref(),
-                        &playback_snapshot.line,
+                        &playback_snapshot,
                         menu_opened_at.elapsed(),
-                        quit_hovered,
+                        hovered,
                     )?;
                 }
                 Event::ConfigureNotify(event) if event.window == icon => {
@@ -360,9 +389,9 @@ fn run_tray(
                         white,
                         pixel_format,
                         menu_content.as_ref(),
-                        &playback_snapshot.line,
+                        &playback_snapshot,
                         menu_opened_at.elapsed(),
-                        false,
+                        None,
                     )?;
                     open_menu(
                         &connection,
@@ -375,27 +404,49 @@ fn run_tray(
                     menu_open = true;
                 }
                 Event::MotionNotify(event) if menu_open => {
-                    quit_hovered = is_quit_row(event.event_x, event.event_y);
+                    hovered = menu_target(event.event_x, event.event_y);
                 }
                 Event::LeaveNotify(_) if menu_open => {
-                    quit_hovered = false;
+                    hovered = None;
                 }
                 Event::KeyPress(event) if menu_open && escape_keycodes.contains(&event.detail) => {
                     close_menu(&connection, menu)?;
                     menu_open = false;
-                    quit_hovered = false;
+                    hovered = None;
                 }
                 Event::ButtonPress(event) if menu_open => {
                     let inside = event.event_x >= 0
                         && event.event_y >= 0
                         && event.event_x < MENU_WIDTH as i16
                         && event.event_y < MENU_HEIGHT as i16;
-                    let quit_clicked = is_quit_row(event.event_x, event.event_y);
-                    close_menu(&connection, menu)?;
-                    menu_open = false;
-                    quit_hovered = false;
-                    if event.detail == 1 && inside && quit_clicked {
-                        exit.request();
+                    if event.detail == 1 && inside {
+                        if let Some(position) =
+                            seek_position(event.event_x, event.event_y, playback_snapshot.duration)
+                        {
+                            if let Err(error) = seek_cmus(position) {
+                                tracing::warn!(%error, "tray seek failed");
+                            }
+                        } else if let Some(target) = menu_target(event.event_x, event.event_y) {
+                            match target {
+                                MenuTarget::Previous => {
+                                    control_from_tray(PlaybackCommand::Previous)
+                                }
+                                MenuTarget::Toggle => {
+                                    control_from_tray(PlaybackCommand::TogglePause)
+                                }
+                                MenuTarget::Next => control_from_tray(PlaybackCommand::Next),
+                                MenuTarget::Quit => {
+                                    close_menu(&connection, menu)?;
+                                    menu_open = false;
+                                    hovered = None;
+                                    exit.request();
+                                }
+                            }
+                        }
+                    } else {
+                        close_menu(&connection, menu)?;
+                        menu_open = false;
+                        hovered = None;
                     }
                 }
                 Event::ClientMessage(event) if event.type_ == manager => {
@@ -419,9 +470,9 @@ fn run_tray(
                 white,
                 pixel_format,
                 menu_content.as_ref(),
-                &playback_snapshot.line,
+                &playback_snapshot,
                 menu_opened_at.elapsed(),
-                quit_hovered,
+                hovered,
             )?;
         }
         thread::sleep(Duration::from_millis(20));
@@ -526,12 +577,12 @@ fn draw_menu(
     white: u32,
     format: PixelFormat,
     content: Option<&MenuContent>,
-    playback: &str,
+    playback: &PlaybackSnapshot,
     elapsed: Duration,
-    quit_hovered: bool,
+    hovered: Option<MenuTarget>,
 ) -> Result<()> {
     if let Some(content) = content {
-        let rgba = render_menu(content, elapsed, quit_hovered);
+        let rgba = render_menu(content, playback, elapsed, hovered);
         let image = native_x11_pixels(&rgba, MENU_WIDTH, MENU_HEIGHT, format)?;
         connection.put_image(
             ImageFormat::Z_PIXMAP,
@@ -562,6 +613,7 @@ fn draw_menu(
     )?;
     connection.change_gc(gc, &ChangeGCAux::new().foreground(white).background(black))?;
     let fallback: String = playback
+        .line
         .chars()
         .map(
             |character| {
@@ -570,21 +622,22 @@ fn draw_menu(
         )
         .collect();
     let fallback = fallback.trim().as_bytes();
-    connection.image_text8(window, gc, 12, 19, &fallback[..fallback.len().min(54)])?;
-    if quit_hovered {
+    connection.image_text8(window, gc, 12, 25, &fallback[..fallback.len().min(54)])?;
+    connection.image_text8(window, gc, 116, 79, b"|<     ||     >|")?;
+    if hovered == Some(MenuTarget::Quit) {
         connection.poly_fill_rectangle(
             window,
             gc,
             &[Rectangle {
                 x: 0,
-                y: INFO_HEIGHT as i16,
+                y: QUIT_TOP as i16,
                 width: MENU_WIDTH,
-                height: MENU_HEIGHT - INFO_HEIGHT,
+                height: MENU_HEIGHT - QUIT_TOP,
             }],
         )?;
         connection.change_gc(gc, &ChangeGCAux::new().foreground(black).background(white))?;
     }
-    connection.image_text8(window, gc, 12, 49, b"Quit")?;
+    connection.image_text8(window, gc, 168, 120, b"Quit")?;
     connection.flush()?;
     Ok(())
 }
@@ -634,46 +687,240 @@ fn font_supports(font: &Font, text: &str) -> bool {
         .all(|character| font.lookup_glyph_index(character) != 0)
 }
 
-fn render_menu(content: &MenuContent, elapsed: Duration, quit_hovered: bool) -> Vec<u8> {
+fn render_menu(
+    content: &MenuContent,
+    playback: &PlaybackSnapshot,
+    elapsed: Duration,
+    hovered: Option<MenuTarget>,
+) -> Vec<u8> {
     let mut pixels = vec![0; usize::from(MENU_WIDTH) * usize::from(MENU_HEIGHT) * 4];
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel[3] = 255;
     }
 
-    let viewport_width = i32::from(MENU_WIDTH) - MENU_PADDING * 2;
+    draw_outline(
+        &mut pixels,
+        PANEL_X,
+        PANEL_Y,
+        PANEL_WIDTH,
+        PANEL_HEIGHT,
+        [70, 70, 70],
+    );
+
+    let title_left = i32::from(PANEL_X) + MENU_PADDING;
+    let viewport_width = i32::from(PANEL_WIDTH) - MENU_PADDING * 2;
     let text_width = content.playback.width as i32;
     let scroll = if text_width > viewport_width {
         (elapsed.as_millis() / 35) as i32 % (text_width + SCROLL_GAP)
     } else {
         0
     };
-    blit_scrolling_text(&mut pixels, &content.playback, scroll, 5, [210, 210, 210]);
+    blit_scrolling_text(
+        &mut pixels,
+        &content.playback,
+        scroll,
+        title_left,
+        viewport_width,
+        TITLE_TOP as i32 + 3,
+        TITLE_TOP,
+        TITLE_BOTTOM,
+        [210, 210, 210],
+    );
 
-    let separator = usize::from(INFO_HEIGHT) * usize::from(MENU_WIDTH) * 4;
+    draw_progress(&mut pixels, playback.position, playback.duration);
+    draw_control(
+        &mut pixels,
+        MenuTarget::Previous,
+        hovered == Some(MenuTarget::Previous),
+        false,
+    );
+    draw_control(
+        &mut pixels,
+        MenuTarget::Toggle,
+        hovered == Some(MenuTarget::Toggle),
+        playback.status == "playing",
+    );
+    draw_control(
+        &mut pixels,
+        MenuTarget::Next,
+        hovered == Some(MenuTarget::Next),
+        false,
+    );
+
+    let separator = usize::from(SEPARATOR_Y) * usize::from(MENU_WIDTH) * 4;
     for x in 0..usize::from(MENU_WIDTH) {
         let offset = separator + x * 4;
         pixels[offset..offset + 3].copy_from_slice(&[70, 70, 70]);
     }
-    if quit_hovered {
-        for y in usize::from(INFO_HEIGHT + 1)..usize::from(MENU_HEIGHT) {
-            for x in 0..usize::from(MENU_WIDTH) {
-                let offset = (y * usize::from(MENU_WIDTH) + x) * 4;
-                pixels[offset..offset + 3].copy_from_slice(&[29, 96, 72]);
-            }
-        }
+    if hovered == Some(MenuTarget::Quit) {
+        fill_rect(
+            &mut pixels,
+            0,
+            QUIT_TOP as i16,
+            MENU_WIDTH,
+            MENU_HEIGHT - QUIT_TOP,
+            [29, 96, 72],
+        );
     }
+    let quit_x = ((usize::from(MENU_WIDTH).saturating_sub(content.quit.width)) / 2) as i32;
     blit_text(
         &mut pixels,
         &content.quit,
-        MENU_PADDING,
-        i32::from(INFO_HEIGHT) + 4,
+        quit_x,
+        i32::from(QUIT_TOP) + 5,
+        0,
+        MENU_WIDTH,
+        QUIT_TOP,
+        MENU_HEIGHT,
         [255, 255, 255],
     );
     pixels
 }
 
-fn is_quit_row(x: i16, y: i16) -> bool {
-    x >= 0 && x < MENU_WIDTH as i16 && y >= INFO_HEIGHT as i16 && y < MENU_HEIGHT as i16
+fn draw_progress(pixels: &mut [u8], position: u64, duration: u64) {
+    fill_rect(
+        pixels,
+        PROGRESS_X,
+        PROGRESS_Y,
+        PROGRESS_WIDTH,
+        PROGRESS_HEIGHT,
+        [70, 70, 70],
+    );
+    if duration == 0 {
+        return;
+    }
+    let filled = progress_offset(position, duration, PROGRESS_WIDTH);
+    fill_rect(
+        pixels,
+        PROGRESS_X,
+        PROGRESS_Y,
+        filled.max(1),
+        PROGRESS_HEIGHT,
+        [70, 230, 158],
+    );
+    let knob_x = PROGRESS_X + filled.min(PROGRESS_WIDTH).saturating_sub(2) as i16;
+    fill_rect(
+        pixels,
+        knob_x,
+        PROGRESS_Y - 2,
+        5,
+        PROGRESS_HEIGHT + 4,
+        [235, 255, 246],
+    );
+}
+
+fn draw_control(pixels: &mut [u8], target: MenuTarget, highlighted: bool, playing: bool) {
+    let x = match target {
+        MenuTarget::Previous => PREVIOUS_X,
+        MenuTarget::Toggle => TOGGLE_X,
+        MenuTarget::Next => NEXT_X,
+        MenuTarget::Quit => return,
+    };
+    if highlighted {
+        fill_rect(
+            pixels,
+            x,
+            CONTROL_TOP,
+            CONTROL_WIDTH,
+            CONTROL_HEIGHT,
+            [29, 96, 72],
+        );
+    }
+    let center_x = x + CONTROL_WIDTH as i16 / 2;
+    let center_y = CONTROL_TOP + CONTROL_HEIGHT as i16 / 2;
+    let color = [245, 245, 245];
+    match target {
+        MenuTarget::Previous => {
+            fill_rect(pixels, center_x - 9, center_y - 7, 2, 15, color);
+            draw_triangle(pixels, center_x + 1, center_y, false, color);
+        }
+        MenuTarget::Toggle if playing => {
+            fill_rect(pixels, center_x - 6, center_y - 7, 4, 15, color);
+            fill_rect(pixels, center_x + 2, center_y - 7, 4, 15, color);
+        }
+        MenuTarget::Toggle => draw_triangle(pixels, center_x, center_y, true, color),
+        MenuTarget::Next => {
+            draw_triangle(pixels, center_x - 1, center_y, true, color);
+            fill_rect(pixels, center_x + 7, center_y - 7, 2, 15, color);
+        }
+        MenuTarget::Quit => {}
+    }
+}
+
+fn draw_triangle(pixels: &mut [u8], center_x: i16, center_y: i16, right: bool, color: [u8; 3]) {
+    for step in 0..8_i16 {
+        let half_height = 7 - step;
+        let x = if right {
+            center_x - 4 + step
+        } else {
+            center_x + 4 - step
+        };
+        fill_rect(
+            pixels,
+            x,
+            center_y - half_height,
+            1,
+            (half_height * 2 + 1) as u16,
+            color,
+        );
+    }
+}
+
+fn draw_outline(pixels: &mut [u8], x: i16, y: i16, width: u16, height: u16, color: [u8; 3]) {
+    fill_rect(pixels, x, y, width, 1, color);
+    fill_rect(pixels, x, y + height as i16 - 1, width, 1, color);
+    fill_rect(pixels, x, y, 1, height, color);
+    fill_rect(pixels, x + width as i16 - 1, y, 1, height, color);
+}
+
+fn fill_rect(pixels: &mut [u8], x: i16, y: i16, width: u16, height: u16, color: [u8; 3]) {
+    let left = x.max(0) as usize;
+    let top = y.max(0) as usize;
+    let right = (i32::from(x) + i32::from(width)).clamp(0, i32::from(MENU_WIDTH)) as usize;
+    let bottom = (i32::from(y) + i32::from(height)).clamp(0, i32::from(MENU_HEIGHT)) as usize;
+    for row in top..bottom {
+        for column in left..right {
+            let offset = (row * usize::from(MENU_WIDTH) + column) * 4;
+            pixels[offset..offset + 3].copy_from_slice(&color);
+        }
+    }
+}
+
+fn menu_target(x: i16, y: i16) -> Option<MenuTarget> {
+    if y >= CONTROL_TOP && y < CONTROL_TOP + CONTROL_HEIGHT as i16 {
+        if x >= PREVIOUS_X && x < PREVIOUS_X + CONTROL_WIDTH as i16 {
+            return Some(MenuTarget::Previous);
+        }
+        if x >= TOGGLE_X && x < TOGGLE_X + CONTROL_WIDTH as i16 {
+            return Some(MenuTarget::Toggle);
+        }
+        if x >= NEXT_X && x < NEXT_X + CONTROL_WIDTH as i16 {
+            return Some(MenuTarget::Next);
+        }
+    }
+    if x >= 0 && x < MENU_WIDTH as i16 && y >= QUIT_TOP as i16 && y < MENU_HEIGHT as i16 {
+        return Some(MenuTarget::Quit);
+    }
+    None
+}
+
+fn seek_position(x: i16, y: i16, duration: u64) -> Option<u64> {
+    if duration == 0
+        || y < PROGRESS_Y - 5
+        || y >= PROGRESS_Y + PROGRESS_HEIGHT as i16 + 5
+        || x < PROGRESS_X
+        || x >= PROGRESS_X + PROGRESS_WIDTH as i16
+    {
+        return None;
+    }
+    let offset = u16::try_from(x - PROGRESS_X).ok()?;
+    Some(seek_from_progress(offset, PROGRESS_WIDTH, duration))
+}
+
+fn control_from_tray(command: PlaybackCommand) {
+    if let Err(error) = control_cmus(command) {
+        tracing::warn!(%error, "tray playback control failed");
+    }
 }
 
 fn escape_keycodes(connection: &RustConnection) -> Result<Vec<u8>> {
@@ -730,15 +977,20 @@ fn rasterize_text(font: &Font, text: &str) -> RasterizedText {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn blit_scrolling_text(
     pixels: &mut [u8],
     text: &RasterizedText,
     scroll: i32,
+    viewport_left: i32,
+    viewport_width: i32,
     offset_y: i32,
+    clip_top: u16,
+    clip_bottom: u16,
     color: [u8; 3],
 ) {
-    let viewport_width = i32::from(MENU_WIDTH) - MENU_PADDING * 2;
     let cycle_width = text.width as i32 + SCROLL_GAP;
+    let centered_x = viewport_left + (viewport_width - text.width as i32).max(0) / 2;
     for destination_x in 0..viewport_width {
         let source_x = if text.width as i32 > viewport_width {
             (scroll + destination_x) % cycle_width
@@ -750,21 +1002,32 @@ fn blit_scrolling_text(
                 pixels,
                 text,
                 source_x as usize,
-                MENU_PADDING + destination_x,
+                if text.width as i32 > viewport_width {
+                    viewport_left + destination_x
+                } else {
+                    centered_x + destination_x
+                },
                 offset_y,
-                0,
-                INFO_HEIGHT,
+                viewport_left,
+                viewport_left + viewport_width,
+                clip_top,
+                clip_bottom,
                 color,
             );
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn blit_text(
     pixels: &mut [u8],
     text: &RasterizedText,
     offset_x: i32,
     offset_y: i32,
+    clip_left: u16,
+    clip_right: u16,
+    clip_top: u16,
+    clip_bottom: u16,
     color: [u8; 3],
 ) {
     for source_x in 0..text.width {
@@ -774,8 +1037,10 @@ fn blit_text(
             source_x,
             offset_x + source_x as i32,
             offset_y,
-            INFO_HEIGHT,
-            MENU_HEIGHT,
+            i32::from(clip_left),
+            i32::from(clip_right),
+            clip_top,
+            clip_bottom,
             color,
         );
     }
@@ -788,11 +1053,13 @@ fn blit_column(
     source_x: usize,
     destination_x: i32,
     offset_y: i32,
+    clip_left: i32,
+    clip_right: i32,
     clip_top: u16,
     clip_bottom: u16,
     color: [u8; 3],
 ) {
-    if destination_x < MENU_PADDING || destination_x >= i32::from(MENU_WIDTH) - MENU_PADDING {
+    if destination_x < clip_left || destination_x >= clip_right {
         return;
     }
     for source_y in 0..text.height {

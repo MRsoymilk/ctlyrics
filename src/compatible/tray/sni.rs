@@ -9,9 +9,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow};
 use ksni::{Icon, MenuItem, Tray, blocking::TrayMethods, menu::StandardItem};
 
+use crate::cmus::{PlaybackCommand, control_cmus};
 use crate::i18n::{Locale, tr};
 
-use super::{ExitSignal, PlaybackInfo, icon::argb_icon, marquee_text};
+use super::{ExitSignal, PlaybackInfo, icon::argb_icon, marquee_text, progress_offset};
 
 const MENU_COLUMNS: usize = 42;
 const SCROLL_INTERVAL: Duration = Duration::from_millis(220);
@@ -22,6 +23,7 @@ struct TrayItem {
     quit_label: String,
     icon: Vec<u8>,
     playback: PlaybackInfo,
+    locale: Locale,
     scroll_step: usize,
     scroll_active_until: Arc<AtomicU64>,
 }
@@ -45,6 +47,11 @@ impl Tray for TrayItem {
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let playback = self.playback.snapshot();
+        let toggle_label = if playback.status == "playing" {
+            tr(self.locale, "tray_pause")
+        } else {
+            tr(self.locale, "tray_play")
+        };
         vec![
             StandardItem {
                 label: marquee_text(&playback.line, MENU_COLUMNS, self.scroll_step)
@@ -53,6 +60,39 @@ impl Tray for TrayItem {
                 ..Default::default()
             }
             .into(),
+            StandardItem {
+                label: progress_label(playback.position, playback.duration),
+                enabled: false,
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: tr(self.locale, "tray_previous").to_string(),
+                icon_name: "media-skip-backward".to_string(),
+                activate: Box::new(|_| run_control(PlaybackCommand::Previous)),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: toggle_label.to_string(),
+                icon_name: if playback.status == "playing" {
+                    "media-playback-pause"
+                } else {
+                    "media-playback-start"
+                }
+                .to_string(),
+                activate: Box::new(|_| run_control(PlaybackCommand::TogglePause)),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: tr(self.locale, "tray_next").to_string(),
+                icon_name: "media-skip-forward".to_string(),
+                activate: Box::new(|_| run_control(PlaybackCommand::Next)),
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
             StandardItem {
                 label: self.quit_label.clone(),
                 activate: Box::new(|tray: &mut Self| tray.exit.request()),
@@ -89,6 +129,7 @@ impl SniTray {
             quit_label: tr(locale, "tray_quit").to_string(),
             icon: argb_icon(32)?,
             playback,
+            locale,
             scroll_step: 0,
             scroll_active_until: scroll_active_until.clone(),
         };
@@ -152,4 +193,30 @@ fn unix_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn progress_label(position: u64, duration: u64) -> String {
+    const WIDTH: usize = 16;
+    let filled = usize::from(progress_offset(position, duration, WIDTH as u16));
+    let mut bar = String::with_capacity(WIDTH);
+    for index in 0..WIDTH {
+        bar.push(if index < filled { '━' } else { '─' });
+    }
+    format!(
+        "{}  {bar}  {}",
+        format_time(position),
+        format_time(duration)
+    )
+}
+
+fn format_time(seconds: u64) -> String {
+    format!("{:02}:{:02}", seconds / 60, seconds % 60)
+}
+
+fn run_control(command: PlaybackCommand) {
+    let _ = thread::spawn(move || {
+        if let Err(error) = control_cmus(command) {
+            tracing::warn!(%error, "tray playback control failed");
+        }
+    });
 }
