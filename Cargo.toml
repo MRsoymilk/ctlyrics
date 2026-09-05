@@ -3,11 +3,6 @@ name = "ctlyrics"
 version = "0.1.0"
 edition = "2024"
 
-[workspace]
-members = [".", "utils", "tool"]
-default-members = ["."]
-resolver = "2"
-
 [dependencies]
 ratatui = { version = "0.28", features = ["crossterm"] }
 crossterm = "0.28"
@@ -21,7 +16,7 @@ anyhow = "1"
 thiserror = "1"
 clap = { version = "4", features = ["derive"] }
 dirs = "5"
-ctlyrics-utils = { path = "utils" }
+walkdir = "2"
 
 # Web server
 axum = { version = "0.7", features = ["multipart"] }

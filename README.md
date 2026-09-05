@@ -16,7 +16,6 @@
 - 网页支持拖拽上传一个或多个 `.lrc` 文件
 - 网页保存音乐目录时显示加载进度
 - 网页修改映射后，终端自动重新加载映射配置
-- 外部歌词下载和歌单生成工具与主程序独立，可按需编译
 
 ## 环境要求
 
@@ -32,10 +31,6 @@ cmus-remote -Q
 ```
 
 ## 构建
-
-### 默认构建
-
-Workspace 默认只编译主程序及其共享工具库，不编译歌词下载工具：
 
 ```bash
 cargo build
@@ -53,29 +48,6 @@ cargo build --release
 target/debug/ctlyrics
 target/release/ctlyrics
 ```
-
-### 可选工具
-
-需要生成歌单或从外部网站下载歌词时，再单独编译工具：
-
-```bash
-cargo build -p ctlyrics-tools --bins
-```
-
-发布构建：
-
-```bash
-cargo build -p ctlyrics-tools --release --bins
-```
-
-生成两个独立可执行文件：
-
-```text
-target/debug/ctlyrics-generate
-target/debug/ctlyrics-download
-```
-
-运行 `cargo build --workspace` 会编译主程序、共享库和全部工具。
 
 ## 使用
 
@@ -173,30 +145,6 @@ cmus-remote -Q
 
 `[ti:]`、`[ar:]`、`[al:]` 等元数据不会显示为歌词。
 
-## 可选工具使用
-
-### 生成歌曲列表
-
-```bash
-./target/debug/ctlyrics-generate /path/to/music
-```
-
-工具扫描音乐目录，并在当前工作目录生成：
-
-```text
-songs_list.txt
-```
-
-### 下载歌词
-
-```bash
-./target/debug/ctlyrics-download
-```
-
-工具读取当前工作目录中的 `songs_list.txt`，将下载成功的歌词写入 `lyrics/`，失败记录写入 `error.txt`。
-
-外部歌词网站可能发生接口变化或暂时不可用，因此下载结果不保证稳定。
-
 ## 工作目录
 
 所有运行数据都相对于启动程序时的当前工作目录，而不是可执行文件所在目录：
@@ -205,8 +153,6 @@ songs_list.txt
 config/mappings.json   # 音乐目录和歌词映射
 lyrics/                # LRC 歌词文件
 log/                   # 程序日志
-songs_list.txt         # 可选工具生成的歌曲列表
-error.txt              # 下载失败记录
 ```
 
 例如：
@@ -239,15 +185,11 @@ src/
   logger.rs        日志初始化
 templates/
   index.html       Web 管理页面
-utils/             主程序和工具共享的音乐目录扫描 crate
-tool/              可选歌词下载和歌单生成 crate
 ```
 
 ## 开发验证
 
 ```bash
 cargo build
-cargo test cmus::tests
-cargo build -p ctlyrics-tools --bins
-cargo test --workspace --no-run
+cargo test --no-run
 ```
