@@ -1,31 +1,3 @@
-mod cmus;
-mod i18n;
-mod logger;
-mod lyrics_cache;
-mod mapping;
-mod player;
-mod web;
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_generate_id() {
-        let id1 = crate::mapping::generate_id();
-        let id2 = crate::mapping::generate_id();
-        assert_ne!(id1, id2);
-    }
-
-    #[test]
-    fn test_scan_music_dir() {
-        let songs = crate::mapping::scan_music_dir("/home/vv/warehouse/music").unwrap();
-        println!("Found {} songs", songs.len());
-        for s in songs.iter().take(5) {
-            println!("  {} - {} ({})", s.title, s.artist, s.ext);
-        }
-        assert!(!songs.is_empty());
-    }
-}
-
 use anyhow::Result;
 use clap::{Arg, ArgAction, Command};
 use crossterm::{
@@ -40,12 +12,12 @@ use std::fs;
 use std::io::{self, Write};
 use std::time::Duration;
 
-use crate::cmus::get_cmus_info;
-use crate::i18n::{Locale, detect_system_locale, preferred_locale, set_preference, tr};
-use crate::logger::init_logger;
-use crate::lyrics_cache::LyricsCache;
-use crate::mapping::MappingStore;
-use crate::player::Player;
+use ctlyrics::cmus::get_cmus_info;
+use ctlyrics::i18n::{Locale, detect_system_locale, preferred_locale, set_preference, tr};
+use ctlyrics::logger::init_logger;
+use ctlyrics::lyrics_cache::LyricsCache;
+use ctlyrics::mapping::{MappingStore, get_mapping_path};
+use ctlyrics::player::Player;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -151,7 +123,7 @@ fn locale_from_args() -> Locale {
 }
 
 fn run_tui(locale: Locale) -> Result<()> {
-    let mapping_store = MappingStore::load(&crate::mapping::get_mapping_path()).unwrap_or_default();
+    let mapping_store = MappingStore::load(&get_mapping_path()).unwrap_or_default();
 
     enable_raw_mode()?;
     let _terminal_guard = TerminalGuard;
@@ -217,11 +189,11 @@ impl Drop for TerminalGuard {
 }
 
 async fn run_web(port: u16, locale: Locale) -> Result<()> {
-    let app = crate::web::create_router();
+    let app = ctlyrics::web::create_router();
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
     println!(
         "{}",
-        crate::i18n::format(locale, "web_running", &[("port", &port.to_string())])
+        ctlyrics::i18n::format(locale, "web_running", &[("port", &port.to_string())])
     );
     axum::serve(listener, app).await?;
     Ok(())
