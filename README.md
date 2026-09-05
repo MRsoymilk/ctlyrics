@@ -196,6 +196,39 @@ cmus-remote -Q
 
 `[ti:]`、`[ar:]`、`[al:]` 等元数据不会显示为歌词。
 
+## 歌词下载工具
+
+`tools/` 中保留了早期 Python 版本的本地歌曲列表生成和歌词下载工具。脚本只使用 Python 标准库，不需要额外安装依赖。
+
+先从音乐目录生成列表：
+
+```bash
+python3 tools/get_songs_from_directory.py /path/to/music -o songs_list.txt
+```
+
+脚本默认递归扫描 `.mp3`、`.flac`、`.wav`、`.m4a`、`.ogg` 和 `.ape`，并按 `歌曲名 - 歌手.ext` 解析文件名。只扫描目录第一层时使用 `--no-recursive`。
+
+再从原版本使用的 `sq0527.cn` 搜索并下载 LRC：
+
+```bash
+python3 tools/get_lyrics.py songs_list.txt -o lyrics
+```
+
+下载器默认按标题和歌手相关度选择结果、跳过已有文件，并在请求失败时重试。常用选项：
+
+```bash
+# 手动选择每首歌的搜索结果
+python3 tools/get_lyrics.py songs_list.txt --interactive
+
+# 仅测试搜索和匹配，不写入歌词
+python3 tools/get_lyrics.py songs_list.txt --dry-run
+
+# 覆盖已有歌词并调整请求间隔
+python3 tools/get_lyrics.py songs_list.txt --overwrite --delay 1
+```
+
+失败项写入 `error.txt`。网站结构或可用性由第三方维护，批量下载时请控制请求频率并遵守网站条款及当地版权规定。
+
 ## 工作目录
 
 所有运行数据都相对于启动程序时的当前工作目录，而不是可执行文件所在目录：
@@ -241,6 +274,9 @@ templates/
 locales/
   en.json          英文语言资源
   zh-CN.json       简体中文语言资源
+tools/
+  get_songs_from_directory.py  从音乐目录生成歌曲列表
+  get_lyrics.py                 搜索并下载 LRC 歌词
 ```
 
 ## 开发验证
@@ -249,4 +285,5 @@ locales/
 cargo build
 cargo test i18n::tests
 cargo test --no-run
+python3 -m unittest discover tools
 ```
