@@ -12,6 +12,10 @@
 
 ![ctlyrics](README/ctlyrics.jpg)
 
+tray menu:
+
+![tray menu](README/tray.jpg)
+
 web mode:
 
 ![web light](README/web-light.jpg)

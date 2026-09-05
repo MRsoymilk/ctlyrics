@@ -12,6 +12,10 @@
 
 ![ctlyrics](README/ctlyrics.jpg)
 
+托盘菜单：
+
+![tray menu](README/tray.jpg)
+
 web 模式：
 
 ![web light](README/web-light.jpg)
