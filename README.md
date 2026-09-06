@@ -100,9 +100,9 @@ cargo run
 产物保存在 `package/dist/`。AppImage 内置 `tools/` 下的三个 Python 工具，可通过统一入口调用：
 
 ```bash
-./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools get-songs /path/to/music
-./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools get-lyrics songs_list.txt
-./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools auto-map --help
+./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools get-songs /path/to/music
+./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools get-lyrics songs_list.txt
+./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools auto-map --help
 ```
 
 Python 工具直接调用宿主系统的 `python3`，不会预先检查是否安装。`cmus` 和 `cmus-remote` 也由宿主系统提供。详细打包说明见 [`package/README.md`](package/README.md)。
@@ -169,7 +169,7 @@ Web 服务在当前 `ctlyrics` 进程内后台运行，不需要提前单独启�
 - TUI 和 CLI 根据 `LC_ALL`、`LC_MESSAGES`、`LANG` 自动选择
 - 无法识别时回退到英文
 
-网页右上角可以选择自动、English 或简体中文，选择结果保存在浏览器 Cookie 中。TUI 使用 `:lang` 命令切换，选择结果保存在当前工作目录的 `config/language` 中。
+网页右上角可以选择自动、English 或简体中文，选择结果保存在浏览器 Cookie 中。TUI 使用 `:lang` 命令切换，选择结果保存在 `$XDG_CONFIG_HOME/ctlyrics/language` 中。
 
 语言文本集中存放于：
 
@@ -208,6 +208,12 @@ locales/zh-CN.json
 ./target/debug/ctlyrics web --port 3001
 ```
 
+服务默认只监听 `127.0.0.1`。如需明确开放给局域网：
+
+```bash
+./target/debug/ctlyrics web --bind 0.0.0.0 --port 3000
+```
+
 ## 网页配置歌词
 
 1. 使用 `:web` 打开配置页面。
@@ -222,10 +228,10 @@ locales/zh-CN.json
 - 仅允许 `.lrc` 文件
 - 支持同时上传多个文件
 - 单次请求最大 10 MiB
-- 上传结果保存在当前工作目录的 `lyrics/` 中
+- 上传结果保存在 `$XDG_DATA_HOME/ctlyrics/lyrics/` 中
 - 上传完成后，歌词文件会立即加入映射下拉列表
 
-映射保存后，正在运行的 TUI 会检测 `config/mappings.json` 的变化并重新加载，不需要重新启动程序。
+映射保存后，正在运行的 TUI 会检测 `$XDG_CONFIG_HOME/ctlyrics/mappings.json` 的变化并重新加载，不需要重新启动程序。
 
 ## 歌词匹配顺序
 
@@ -233,7 +239,7 @@ locales/zh-CN.json
 
 1. 使用 cmus 返回的音乐文件完整路径查找映射
 2. 使用标题和歌手查找映射
-3. 在 `lyrics/` 中查找文件名包含歌曲标题的 `.lrc` 文件
+3. 在 XDG 歌词目录中查找文件名包含歌曲标题的 `.lrc` 文件
 4. 如果有多个候选文件，再使用歌手名称筛选
 
 网页中显示“已映射”只代表该行歌曲已配置歌词，不代表 cmus 当前正在播放这首歌曲。可以使用下面的命令确认当前歌曲：
@@ -271,7 +277,7 @@ python3 tools/get_songs_from_directory.py /path/to/music -o songs_list.txt
 再从原版本使用的 `sq0527.cn` 搜索并下载 LRC：
 
 ```bash
-python3 tools/get_lyrics.py songs_list.txt -o lyrics
+python3 tools/get_lyrics.py songs_list.txt
 ```
 
 下载器默认按标题和歌手相关度选择结果、跳过已有文件，并在请求失败时重试。常用选项：
@@ -293,8 +299,7 @@ python3 tools/get_lyrics.py songs_list.txt --overwrite --delay 1
 
 ```bash
 python3 tools/auto_map.py \
-  --lyrics-dir ~/warehouse/ctlyrics/lyrics \
-  --config-dir ~/warehouse/ctlyrics/config
+  --lyrics-dir ~/warehouse/ctlyrics/lyrics
 ```
 
 建议先预览匹配结果：
@@ -302,39 +307,23 @@ python3 tools/auto_map.py \
 ```bash
 python3 tools/auto_map.py \
   --lyrics-dir ~/warehouse/ctlyrics/lyrics \
-  --config-dir ~/warehouse/ctlyrics/config \
   --dry-run
 ```
 
-自动映射默认保留已有手动映射，只写入高置信度且无歧义的匹配。工具不会移动或修改 `--lyrics-dir` 中的源文件，而是将目标歌词复制到配置目录同级的 `lyrics/`，例如指定 `/opt/ctlyrics/config` 时复制到 `/opt/ctlyrics/lyrics`。这与 ctlyrics 固定从运行目录下 `lyrics/` 读取的规则一致。使用 `--overwrite` 可更新已有映射并覆盖目标歌词；使用 `--music-dir /path/to/music` 可覆盖配置中的音乐目录。实际写入前，原配置会备份为 `mappings.json.bak`。修改外部配置后需要重启 Web 服务。
+自动映射默认保留已有手动映射，只写入高置信度且无歧义的匹配。工具不会移动或修改 `--lyrics-dir` 中的源文件，默认将目标歌词复制到 XDG 歌词目录，并将映射写入 XDG 配置目录。自定义位置时使用 `--config-dir` 和 `--target-lyrics-dir`。使用 `--overwrite` 可更新已有映射并覆盖目标歌词；使用 `--music-dir /path/to/music` 可覆盖配置中的音乐目录。实际写入前，原配置会备份为 `mappings.json.bak`。修改外部配置后需要重启 Web 服务。
 
-## 工作目录
+## 用户数据
 
-所有运行数据都相对于启动程序时的当前工作目录，而不是可执行文件所在目录：
+运行数据遵循 XDG Base Directory 规范：
 
 ```text
-config/mappings.json   # 音乐目录和歌词映射
-config/language        # TUI 和 CLI 语言设置
-lyrics/                # LRC 歌词目录
-log/                   # 程序日志
+$XDG_CONFIG_HOME/ctlyrics/mappings.json  # 音乐目录和歌词映射
+$XDG_CONFIG_HOME/ctlyrics/language       # TUI 和 CLI 语言设置
+$XDG_DATA_HOME/ctlyrics/lyrics/           # LRC 歌词目录
+$XDG_STATE_HOME/ctlyrics/                 # 程序日志
 ```
 
-例如：
-
-```bash
-cd target/debug
-./ctlyrics
-```
-
-此时程序使用 `target/debug/config/` 和 `target/debug/lyrics/`。
-
-如果在项目根目录运行：
-
-```bash
-./target/debug/ctlyrics
-```
-
-则程序使用项目根目录下的 `config/` 和 `lyrics/`。建议固定在同一目录启动，避免读取到不同的配置和歌词。
+未设置 XDG 环境变量时，默认目录分别为 `~/.config/ctlyrics`、`~/.local/share/ctlyrics` 和 `~/.local/state/ctlyrics`。首次启动时，程序会检测当前工作目录下旧版 `config/` 和 `lyrics/`，仅在对应 XDG 文件不存在时复制；不会覆盖或删除旧文件。
 
 ## 项目结构
 
@@ -348,6 +337,7 @@ src/
   mapping.rs       映射配置读写
   web.rs           Web 路由、上传和映射接口
   logger.rs        日志初始化
+  paths.rs         XDG 路径和旧数据迁移
 templates/
   index.html       Web 管理页面
 locales/

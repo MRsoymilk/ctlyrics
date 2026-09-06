@@ -17,13 +17,13 @@ The AppImage uses the host installation of `cmus`, `cmus-remote`, and
 `python3`. The bundled Python tools can be invoked through the AppImage:
 
 ```bash
-./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools get-songs --help
-./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools get-lyrics --help
-./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools auto-map --help
+./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools get-songs --help
+./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools get-lyrics --help
+./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools auto-map --help
 ```
 
-Tool arguments and relative paths are evaluated from the caller's current
-working directory.
+Tool arguments containing relative paths are evaluated from the caller's
+current working directory. Runtime defaults use the XDG user directories.
 
 The TUI system tray supports StatusNotifierItem hosts on Wayland and falls
 back to XEmbed on X11. Its right-click menu shows playback progress, media

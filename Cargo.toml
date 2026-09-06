@@ -1,6 +1,6 @@
 [package]
 name = "ctlyrics"
-version = "0.1.4"
+version = "0.1.5"
 authors = ["MRsoymilk <codermrsoymilk@gmail.com>"]
 description = "A terminal lyrics viewer and mapping manager for cmus"
 license = "MIT"

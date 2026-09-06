@@ -99,9 +99,9 @@ Install the local packaging dependency and build the AppImage with the bundled s
 Artifacts are written to `package/dist/`. The AppImage bundles the three Python tools from `tools/` behind a common entry point:
 
 ```bash
-./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools get-songs /path/to/music
-./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools get-lyrics songs_list.txt
-./package/dist/ctlyrics-0.1.2-x86_64.AppImage tools auto-map --help
+./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools get-songs /path/to/music
+./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools get-lyrics songs_list.txt
+./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools auto-map --help
 ```
 
 The tools invoke the host's `python3` directly without checking whether it is installed. The host must also provide `cmus` and `cmus-remote`. See [`package/README.md`](package/README.md) for packaging details.
@@ -164,7 +164,7 @@ Supported languages:
 
 Without an explicit preference, the Web UI uses the browser `Accept-Language` header, while the TUI and CLI use `LC_ALL`, `LC_MESSAGES`, or `LANG`. English is the fallback.
 
-The Web UI stores its language preference in a cookie. The TUI stores it in `config/language` under the current working directory. Translation resources are located at:
+The Web UI stores its language preference in a cookie. The TUI stores it in `$XDG_CONFIG_HOME/ctlyrics/language`. Translation resources are located at:
 
 ```text
 locales/en.json
@@ -197,6 +197,12 @@ Use a different port:
 ./target/debug/ctlyrics web --port 3001
 ```
 
+The server listens on `127.0.0.1` by default. To make it available on the local network explicitly:
+
+```bash
+./target/debug/ctlyrics web --bind 0.0.0.0 --port 3000
+```
+
 ## Configure Lyrics in the Web UI
 
 1. Use `:web` to open the management page.
@@ -211,10 +217,10 @@ Upload rules:
 - Only `.lrc` files are accepted
 - Multiple files can be uploaded together
 - Each request is limited to 10 MiB
-- Files are stored in `lyrics/` under the current working directory
+- Files are stored in `$XDG_DATA_HOME/ctlyrics/lyrics/`
 - Uploaded files become available in mapping selectors immediately
 
-The TUI detects changes to `config/mappings.json` and reloads mappings without restarting.
+The TUI detects changes to `$XDG_CONFIG_HOME/ctlyrics/mappings.json` and reloads mappings without restarting.
 
 ## Matching Order
 
@@ -222,7 +228,7 @@ Lyrics are selected in this order:
 
 1. Match the complete music path returned by cmus
 2. Match title and artist
-3. Find an `.lrc` filename containing the title in `lyrics/`
+3. Find an `.lrc` filename containing the title in the XDG lyrics directory
 4. Use the artist to refine multiple candidates
 
 The Mapped badge only means that a web row has a configured lyric mapping. It does not indicate the track currently playing in cmus.
@@ -256,7 +262,7 @@ Supported formats are `.mp3`, `.flac`, `.wav`, `.m4a`, `.ogg`, and `.ape`. Filen
 Download lyrics from the source used by the original Python version:
 
 ```bash
-python3 tools/get_lyrics.py songs_list.txt -o lyrics
+python3 tools/get_lyrics.py songs_list.txt
 ```
 
 Useful options:
@@ -278,31 +284,23 @@ Automatically create mappings after downloading lyrics:
 
 ```bash
 python3 tools/auto_map.py \
-  --lyrics-dir ~/warehouse/ctlyrics/lyrics \
-  --config-dir ~/warehouse/ctlyrics/config
+  --lyrics-dir ~/warehouse/ctlyrics/lyrics
 ```
 
-Preview changes first with `--dry-run`. Existing mappings and copied lyrics are preserved by default; `--overwrite` replaces them. Source lyrics are not modified. Matching LRC files are copied into the `lyrics/` directory beside the specified `config/` directory. The original configuration is backed up as `mappings.json.bak` before changes are written.
+Preview changes first with `--dry-run`. Existing mappings and copied lyrics are preserved by default; `--overwrite` replaces them. Source lyrics are not modified. By default, matching LRC files are copied to the XDG lyrics directory and mappings are written to the XDG configuration directory. Use `--config-dir` and `--target-lyrics-dir` for custom locations. The original configuration is backed up as `mappings.json.bak` before changes are written.
 
-## Working Directory
+## User Data
 
-Runtime data is relative to the working directory, not the executable location:
+Runtime data follows the XDG Base Directory specification:
 
 ```text
-config/mappings.json   # Music directory and lyric mappings
-config/language        # TUI and CLI language preference
-lyrics/                # LRC files
-log/                   # Application logs
+$XDG_CONFIG_HOME/ctlyrics/mappings.json  # Music directory and lyric mappings
+$XDG_CONFIG_HOME/ctlyrics/language       # TUI and CLI language preference
+$XDG_DATA_HOME/ctlyrics/lyrics/           # LRC files
+$XDG_STATE_HOME/ctlyrics/                 # Application logs
 ```
 
-For example:
-
-```bash
-cd target/debug
-./ctlyrics
-```
-
-This uses `target/debug/config/` and `target/debug/lyrics/`. Running `./target/debug/ctlyrics` from the project root uses the root-level `config/` and `lyrics/` instead. Use a consistent working directory.
+When the XDG variables are unset, the defaults are `~/.config/ctlyrics`, `~/.local/share/ctlyrics`, and `~/.local/state/ctlyrics`. On first startup, files from legacy `config/` and `lyrics/` directories in the current working directory are copied if the corresponding XDG files do not exist. Legacy files are not overwritten or removed.
 
 ## Project Layout
 
@@ -316,6 +314,7 @@ src/
   mapping.rs       Mapping configuration and music scanning
   web.rs           Web routes, uploads, and mapping API
   logger.rs        Logging setup
+  paths.rs         XDG paths and legacy data migration
 templates/
   index.html       Web management page
 locales/
