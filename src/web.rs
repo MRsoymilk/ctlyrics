@@ -456,7 +456,8 @@ async fn remove_mapping(
 async fn upload_lrc(headers: HeaderMap, mut multipart: Multipart) -> Result<Response, AppError> {
     let (locale, _) = web_locale(&headers);
     let mut uploaded = Vec::new();
-    fs::create_dir_all("lyrics").map_err(MappingError::from)?;
+    let lyrics_dir = crate::paths::get().lyrics_dir();
+    fs::create_dir_all(&lyrics_dir).map_err(MappingError::from)?;
 
     while let Some(field) = multipart
         .next_field()
@@ -488,8 +489,7 @@ async fn upload_lrc(headers: HeaderMap, mut multipart: Multipart) -> Result<Resp
             .bytes()
             .await
             .map_err(|e| AppError::BadRequest(e.to_string()))?;
-        fs::write(std::path::Path::new("lyrics").join(&filename), content)
-            .map_err(MappingError::from)?;
+        fs::write(lyrics_dir.join(&filename), content).map_err(MappingError::from)?;
         uploaded.push(filename);
     }
 

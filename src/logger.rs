@@ -7,8 +7,9 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 
 pub fn init_logger(log_file: &str) {
-    fs::create_dir_all("log").ok();
-    let file_appender = RollingFileAppender::new(Rotation::DAILY, "log", log_file);
+    let log_dir = crate::paths::get().log_dir();
+    fs::create_dir_all(log_dir).ok();
+    let file_appender = RollingFileAppender::new(Rotation::DAILY, log_dir, log_file);
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
     let _ = LOG_GUARD.set(guard);
 

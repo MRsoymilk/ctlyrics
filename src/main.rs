@@ -8,7 +8,6 @@ use crossterm::{
     terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::Terminal;
-use std::fs;
 use std::io::{self, Write};
 use std::time::Duration;
 
@@ -22,8 +21,7 @@ use ctlyrics::player::Player;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    fs::create_dir_all("log")?;
-    fs::create_dir_all("config")?;
+    ctlyrics::paths::prepare_user_dirs()?;
 
     let command_locale = locale_from_args();
     let matches = localize_command(

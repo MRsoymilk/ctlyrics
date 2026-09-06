@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,11 +106,11 @@ pub fn set_preference(value: &str) -> std::io::Result<Locale> {
             "unsupported language preference",
         )
     })?;
-    fs::create_dir_all("config")?;
+    fs::create_dir_all(crate::paths::get().language_file().parent().unwrap())?;
     fs::write(language_path(), locale.code())?;
     Ok(locale)
 }
 
-fn language_path() -> &'static Path {
-    Path::new("config/language")
+fn language_path() -> std::path::PathBuf {
+    crate::paths::get().language_file()
 }
