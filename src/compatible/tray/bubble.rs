@@ -2,10 +2,7 @@ use std::fs;
 use std::process::Command;
 use std::time::Duration;
 
-use fontdue::{
-    Font, FontSettings,
-    layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle},
-};
+use ab_glyph::{Font, FontVec, GlyphId, PxScale, ScaleFont, point};
 
 const FONT_SIZE: f32 = 14.0;
 const PADDING: usize = 14;
@@ -30,7 +27,7 @@ pub(super) enum LyricOrientation {
 }
 
 impl LyricBubbleContent {
-    pub(super) fn new(font: &Font, text: &str) -> Self {
+    pub(super) fn new(font: &FontVec, text: &str) -> Self {
         Self {
             horizontal: rasterize_text(font, text),
             vertical: rasterize_vertical_text(font, text),
@@ -45,7 +42,7 @@ impl LyricBubbleContent {
     }
 }
 
-pub(super) fn load_font(sample: &str) -> Option<Font> {
+pub(super) fn load_font(sample: &str) -> Option<FontVec> {
     let pattern = sample
         .chars()
         .find(|character| !character.is_ascii() && !character.is_whitespace())
@@ -73,50 +70,64 @@ pub(super) fn load_font(sample: &str) -> Option<Font> {
         let Ok(data) = fs::read(path) else {
             continue;
         };
-        let settings = FontSettings {
-            collection_index,
-            ..Default::default()
-        };
-        if let Ok(font) = Font::from_bytes(data, settings) {
+        if let Ok(font) = FontVec::try_from_vec_and_index(data, collection_index) {
             return Some(font);
         }
     }
     None
 }
 
-pub(super) fn font_supports(font: &Font, text: &str) -> bool {
+pub(super) fn font_supports(font: &FontVec, text: &str) -> bool {
     text.chars()
         .filter(|character| !character.is_whitespace())
-        .all(|character| font.lookup_glyph_index(character) != 0)
+        .all(|character| font.glyph_id(character) != GlyphId(0))
 }
 
-pub(super) fn rasterize_text(font: &Font, text: &str) -> RasterizedText {
-    let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
-    layout.reset(&LayoutSettings::default());
-    layout.append(&[font], &TextStyle::new(text, FONT_SIZE, 0));
-    let width = layout
-        .glyphs()
-        .iter()
-        .map(|glyph| glyph.x.ceil() as usize + glyph.width)
-        .max()
-        .unwrap_or(0);
-    let height = layout
-        .glyphs()
-        .iter()
-        .map(|glyph| glyph.y.ceil() as usize + glyph.height)
-        .max()
-        .unwrap_or(0);
-    let mut alpha = vec![0; width * height];
-    for glyph in layout.glyphs() {
-        let (_, bitmap) = font.rasterize_config(glyph.key);
-        for y in 0..glyph.height {
-            let destination_y = glyph.y.ceil() as usize + y;
-            for x in 0..glyph.width {
-                let destination_x = glyph.x.ceil() as usize + x;
-                let destination = destination_y * width + destination_x;
-                alpha[destination] = alpha[destination].max(bitmap[y * glyph.width + x]);
-            }
+pub(super) fn rasterize_text(font: &FontVec, text: &str) -> RasterizedText {
+    let scale = PxScale::from(FONT_SIZE);
+    let scaled = font.as_scaled(scale);
+    let mut caret = 0.0;
+    let mut previous = None;
+    let mut glyphs = Vec::new();
+    let mut min_x = 0.0_f32;
+    let mut min_y = 0.0_f32;
+    let mut max_x = 0.0_f32;
+    let mut max_y = 0.0_f32;
+
+    for character in text.chars().filter(|character| *character != '\r') {
+        if character == '\n' {
+            break;
         }
+        let id = scaled.glyph_id(character);
+        if let Some(previous) = previous {
+            caret += scaled.kern(previous, id);
+        }
+        let glyph = id.with_scale_and_position(scale, point(caret, scaled.ascent()));
+        caret += scaled.h_advance(id);
+        previous = Some(id);
+        if let Some(outlined) = scaled.outline_glyph(glyph) {
+            let bounds = outlined.px_bounds();
+            min_x = min_x.min(bounds.min.x);
+            min_y = min_y.min(bounds.min.y);
+            max_x = max_x.max(bounds.max.x);
+            max_y = max_y.max(bounds.max.y);
+            glyphs.push(outlined);
+        }
+    }
+
+    max_x = max_x.max(caret);
+    let width = (max_x.ceil() - min_x.floor()).max(0.0) as usize;
+    let height = (max_y.ceil() - min_y.floor()).max(0.0) as usize;
+    let mut alpha = vec![0; width * height];
+    for glyph in glyphs {
+        let bounds = glyph.px_bounds();
+        let offset_x = (bounds.min.x - min_x.floor()).max(0.0) as usize;
+        let offset_y = (bounds.min.y - min_y.floor()).max(0.0) as usize;
+        glyph.draw(|x, y, coverage| {
+            let destination = (offset_y + y as usize) * width + offset_x + x as usize;
+            let coverage = (coverage.clamp(0.0, 1.0) * 255.0).round() as u8;
+            alpha[destination] = alpha[destination].max(coverage);
+        });
     }
     RasterizedText {
         width,
@@ -191,7 +202,7 @@ pub(super) fn render_lyric_bubble(
     (pixels, width, height)
 }
 
-fn rasterize_vertical_text(font: &Font, text: &str) -> RasterizedText {
+fn rasterize_vertical_text(font: &FontVec, text: &str) -> RasterizedText {
     let glyphs: Vec<_> = text
         .chars()
         .filter(|character| !matches!(character, '\r' | '\n'))
