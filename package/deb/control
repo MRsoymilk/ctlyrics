@@ -1,0 +1,14 @@
+Package: ctlyrics
+Version: @VERSION@
+Section: sound
+Priority: optional
+Architecture: amd64
+Maintainer: MRsoymilk <codermrsoymilk@gmail.com>
+Installed-Size: @INSTALLED_SIZE@
+Depends: cmus, fontconfig, libc6, libgcc-s1, python3, xdg-utils
+Homepage: https://github.com/MRsoymilk/ctlyrics
+Description: terminal lyrics viewer and mapping manager for cmus
+ ctlyrics displays synchronized LRC lyrics for the current cmus track. It
+ includes a terminal interface, Web mapping manager, desktop tray integration,
+ Wayland and X11 lyric bubbles, and helper tools for downloading and mapping
+ lyrics.

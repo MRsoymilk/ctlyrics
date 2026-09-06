@@ -16,7 +16,8 @@ use smithay_client_toolkit::reexports::client::{
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_registry,
+    delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
+    delegate_seat, delegate_shm, delegate_xdg_shell, delegate_xdg_window,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
@@ -458,10 +459,7 @@ impl State {
             destination.copy_from_slice(&[source[2], source[1], source[0], source[3]]);
         }
         surface.damage_buffer(0, 0, i32::from(width), i32::from(height));
-        surface.frame(
-            qh,
-            smithay_client_toolkit::compositor::FrameCallbackData(surface.clone()),
-        );
+        surface.frame(qh, surface.clone());
         buffer.attach_to(&surface)?;
         surface.commit();
         self.dirty = false;
@@ -504,9 +502,7 @@ impl State {
     }
 
     fn pointer_axis(&mut self, vertical: AxisScroll) {
-        let delta = if vertical.value120 != 0 {
-            f64::from(vertical.value120)
-        } else if vertical.discrete != 0 {
+        let delta = if vertical.discrete != 0 {
             f64::from(vertical.discrete)
         } else {
             vertical.absolute
@@ -855,7 +851,14 @@ impl ProvidesRegistryState for State {
     registry_handlers![OutputState, SeatState];
 }
 
-smithay_client_toolkit::delegate_dispatch2!(State);
+delegate_compositor!(State);
+delegate_output!(State);
+delegate_shm!(State);
+delegate_seat!(State);
+delegate_pointer!(State);
+delegate_layer!(State);
+delegate_xdg_shell!(State);
+delegate_xdg_window!(State);
 
 #[cfg(test)]
 mod tests {

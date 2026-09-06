@@ -79,8 +79,8 @@ impl LyricsCache {
             if !music_path_str.is_empty()
                 && let Some(mapping) = store.get_by_music_path(music_path_str)
             {
-                let path = format!("lyrics/{}", mapping.lrc_filename);
-                self.last_lyrics = parse_lrc(Path::new(&path));
+                let path = crate::paths::get().lyrics_dir().join(&mapping.lrc_filename);
+                self.last_lyrics = parse_lrc(&path);
                 self.last_title = Some(title.to_string());
                 self.last_artist = Some(artist_str.to_string());
                 self.last_music_path = Some(music_path_str.to_string());
@@ -89,8 +89,8 @@ impl LyricsCache {
 
             // Fallback to title+artist matching
             if let Some(mapping) = store.get_by_title_artist(title, artist_str) {
-                let path = format!("lyrics/{}", mapping.lrc_filename);
-                self.last_lyrics = parse_lrc(Path::new(&path));
+                let path = crate::paths::get().lyrics_dir().join(&mapping.lrc_filename);
+                self.last_lyrics = parse_lrc(&path);
                 self.last_title = Some(title.to_string());
                 self.last_artist = Some(artist_str.to_string());
                 self.last_music_path = Some(music_path_str.to_string());
@@ -99,7 +99,7 @@ impl LyricsCache {
         }
 
         // Fallback to file matching
-        if let Some(path) = find_lrc_file("lyrics", title, artist) {
+        if let Some(path) = find_lrc_file(&crate::paths::get().lyrics_dir(), title, artist) {
             self.last_lyrics = parse_lrc(Path::new(&path));
         } else {
             self.last_lyrics.clear();
@@ -132,7 +132,7 @@ fn mapping_modified_time() -> Option<SystemTime> {
     fs::metadata(get_mapping_path()).ok()?.modified().ok()
 }
 
-fn find_lrc_file(directory: &str, title: &str, artist: Option<&str>) -> Option<String> {
+fn find_lrc_file(directory: &Path, title: &str, artist: Option<&str>) -> Option<String> {
     let title_pattern = Regex::new(&regex::escape(title)).ok()?;
     let files = fs::read_dir(directory).ok()?;
 

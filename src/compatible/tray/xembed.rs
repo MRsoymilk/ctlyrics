@@ -1,8 +1,8 @@
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use ab_glyph::FontVec;
 use anyhow::{Context, Result, anyhow};
-use fontdue::Font;
 use x11rb::CURRENT_TIME;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
@@ -98,7 +98,7 @@ struct BubbleDrag {
 }
 
 impl MenuContent {
-    fn new(font: &Font, playback: &str, web_label: &str, quit_label: &str) -> Self {
+    fn new(font: &FontVec, playback: &str, web_label: &str, quit_label: &str) -> Self {
         Self {
             playback: rasterize_text(font, playback),
             web: rasterize_text(font, web_label),

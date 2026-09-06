@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import html.parser
+import os
 import re
 import sys
 import time
@@ -21,6 +22,12 @@ from typing import TextIO
 DEFAULT_BASE_URL = "https://www.sq0527.cn"
 USER_AGENT = "ctlyrics-tools/1.0 (+https://github.com/)"
 TIMESTAMP_PATTERN = re.compile(r"\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]")
+
+
+def default_lyrics_dir() -> Path:
+    data_home = os.environ.get("XDG_DATA_HOME")
+    base = Path(data_home).expanduser() if data_home else Path.home() / ".local" / "share"
+    return base / "ctlyrics" / "lyrics"
 
 
 def write_line(message: str = "", stream: TextIO = sys.stdout) -> None:
@@ -221,7 +228,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "songs_file", nargs="?", type=Path, default=Path("songs_list.txt")
     )
-    parser.add_argument("-o", "--output-dir", type=Path, default=Path("lyrics"))
+    parser.add_argument("-o", "--output-dir", type=Path, default=default_lyrics_dir())
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--limit", type=int, default=15, help="maximum search candidates")
     parser.add_argument("--interactive", action="store_true", help="choose each match manually")

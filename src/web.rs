@@ -22,60 +22,64 @@ use std::sync::{
 };
 use std::thread;
 use std::time::Duration;
-use tower_http::services::ServeDir;
+
+use anyhow::{Context, anyhow};
 
 pub const WEB_URL: &str = "http://localhost:3000";
 
 static WEB_SERVER_STARTED: AtomicBool = AtomicBool::new(false);
 
 pub fn start_and_open() -> anyhow::Result<()> {
-    start_server_once();
+    start_server_once()?;
     open::that(WEB_URL)?;
     Ok(())
 }
 
-fn start_server_once() {
+fn start_server_once() -> anyhow::Result<()> {
     if WEB_SERVER_STARTED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        return;
+        return Ok(());
     }
 
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-    match thread::Builder::new()
+    let thread = thread::Builder::new()
         .name("ctlyrics-web-server".to_string())
         .spawn(move || {
             let Ok(runtime) = tokio::runtime::Runtime::new() else {
-                tracing::error!("failed to create web server runtime");
+                let _ = ready_tx.send(Err("failed to create web server runtime".to_string()));
                 WEB_SERVER_STARTED.store(false, Ordering::Release);
                 return;
             };
             runtime.block_on(async {
-                let listener = match tokio::net::TcpListener::bind("0.0.0.0:3000").await {
+                let listener = match tokio::net::TcpListener::bind("127.0.0.1:3000").await {
                     Ok(listener) => listener,
                     Err(error) => {
-                        tracing::error!(%error, "failed to bind web server");
+                        let _ = ready_tx.send(Err(format!("failed to bind web server: {error}")));
                         WEB_SERVER_STARTED.store(false, Ordering::Release);
                         return;
                     }
                 };
                 tracing::info!("web server running at {WEB_URL}");
-                let _ = ready_tx.send(());
+                let _ = ready_tx.send(Ok(()));
                 if let Err(error) = axum::serve(listener, create_router()).await {
                     tracing::error!(%error, "web server stopped");
                 }
                 WEB_SERVER_STARTED.store(false, Ordering::Release);
             });
-        }) {
-        Ok(_) => {
-            if ready_rx.recv_timeout(Duration::from_secs(2)).is_err() {
-                tracing::warn!("web server did not become ready before opening the browser");
-            }
-        }
+        });
+    if let Err(error) = thread {
+        WEB_SERVER_STARTED.store(false, Ordering::Release);
+        return Err(error).context("failed to start web server thread");
+    }
+
+    match ready_rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(anyhow!(error)),
         Err(error) => {
             WEB_SERVER_STARTED.store(false, Ordering::Release);
-            tracing::error!(%error, "failed to start web server thread");
+            Err(error).context("web server did not become ready")
         }
     }
 }
@@ -275,10 +279,9 @@ pub fn create_router() -> Router {
         .route("/map", post(create_mapping))
         .route("/unmap", post(remove_mapping))
         .route("/api/lrc/upload", post(upload_lrc))
-        .route("/api/lrc/:filename", get(get_lrc_content))
+        .route("/api/lrc/{filename}", get(get_lrc_content))
         .route("/assets/logo_icon.png", get(logo_icon))
         .route("/assets/logo_font.png", get(logo_font))
-        .nest_service("/static", ServeDir::new("static"))
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(store)
 }
@@ -456,7 +459,8 @@ async fn remove_mapping(
 async fn upload_lrc(headers: HeaderMap, mut multipart: Multipart) -> Result<Response, AppError> {
     let (locale, _) = web_locale(&headers);
     let mut uploaded = Vec::new();
-    fs::create_dir_all("lyrics").map_err(MappingError::from)?;
+    let lyrics_dir = crate::paths::get().lyrics_dir();
+    fs::create_dir_all(&lyrics_dir).map_err(MappingError::from)?;
 
     while let Some(field) = multipart
         .next_field()
@@ -488,8 +492,7 @@ async fn upload_lrc(headers: HeaderMap, mut multipart: Multipart) -> Result<Resp
             .bytes()
             .await
             .map_err(|e| AppError::BadRequest(e.to_string()))?;
-        fs::write(std::path::Path::new("lyrics").join(&filename), content)
-            .map_err(MappingError::from)?;
+        fs::write(lyrics_dir.join(&filename), content).map_err(MappingError::from)?;
         uploaded.push(filename);
     }
 

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -85,8 +85,8 @@ pub fn generate_id() -> String {
     format!("{:x}{:x}", now.as_nanos(), sequence)
 }
 
-pub fn get_mapping_path() -> PathBuf {
-    PathBuf::from("config/mappings.json")
+pub fn get_mapping_path() -> std::path::PathBuf {
+    crate::paths::get().mapping_file()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -137,7 +137,7 @@ pub fn scan_music_dir(dir: &str) -> Result<Vec<SongFile>, MappingError> {
 
 pub fn list_lrc_files() -> Result<Vec<String>, MappingError> {
     let mut files = Vec::new();
-    if let Ok(entries) = fs::read_dir("lyrics") {
+    if let Ok(entries) = fs::read_dir(crate::paths::get().lyrics_dir()) {
         for entry in entries.flatten() {
             if entry.path().extension().is_some_and(|e| e == "lrc")
                 && let Some(name) = entry.file_name().to_str()
@@ -151,6 +151,6 @@ pub fn list_lrc_files() -> Result<Vec<String>, MappingError> {
 }
 
 pub fn read_lrc_content(filename: &str) -> Result<String, MappingError> {
-    let path = Path::new("lyrics").join(filename);
+    let path = crate::paths::get().lyrics_dir().join(filename);
     fs::read_to_string(path).map_err(Into::into)
 }

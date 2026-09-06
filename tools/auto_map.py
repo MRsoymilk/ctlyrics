@@ -19,6 +19,18 @@ from typing import TextIO
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".wav", ".m4a", ".ogg", ".ape"}
 
 
+def default_config_dir() -> Path:
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(config_home).expanduser() if config_home else Path.home() / ".config"
+    return base / "ctlyrics"
+
+
+def default_lyrics_dir() -> Path:
+    data_home = os.environ.get("XDG_DATA_HOME")
+    base = Path(data_home).expanduser() if data_home else Path.home() / ".local" / "share"
+    return base / "ctlyrics" / "lyrics"
+
+
 def write_line(message: str = "", stream: TextIO = sys.stdout) -> None:
     newline = "\r\n" if stream.isatty() else "\n"
     stream.write(message + newline)
@@ -152,8 +164,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config-dir",
         type=Path,
-        required=True,
-        help="runtime config directory; LRC files are copied beside it into lyrics/",
+        help="configuration directory (default: the ctlyrics XDG config directory)",
+    )
+    parser.add_argument(
+        "--target-lyrics-dir",
+        type=Path,
+        help="destination directory (default: the ctlyrics XDG data directory)",
     )
     parser.add_argument(
         "--music-dir",
@@ -173,9 +189,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     lyrics_dir = args.lyrics_dir.expanduser().resolve()
-    config_dir = args.config_dir.expanduser().resolve()
+    config_dir = (args.config_dir or default_config_dir()).expanduser().resolve()
     config_path = config_dir / "mappings.json"
-    target_lyrics_dir = config_dir.parent / "lyrics"
+    if args.target_lyrics_dir:
+        target_lyrics_dir = args.target_lyrics_dir.expanduser().resolve()
+    elif args.config_dir:
+        target_lyrics_dir = config_dir.parent / "lyrics"
+    else:
+        target_lyrics_dir = default_lyrics_dir().expanduser().resolve()
 
     if not lyrics_dir.is_dir():
         write_line(f"Error: lyrics directory does not exist: {lyrics_dir}", sys.stderr)
