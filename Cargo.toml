@@ -1,6 +1,13 @@
 [package]
 name = "ctlyrics"
 version = "0.1.4"
+authors = ["MRsoymilk <codermrsoymilk@gmail.com>"]
+description = "A terminal lyrics viewer and mapping manager for cmus"
+license = "MIT"
+repository = "https://github.com/MRsoymilk/ctlyrics"
+readme = "README.en.md"
+keywords = ["cmus", "lyrics", "terminal", "tui", "music"]
+categories = ["command-line-utilities", "multimedia::audio"]
 edition = "2024"
 rust-version = "1.88"
 
