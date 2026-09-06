@@ -31,3 +31,23 @@ controls, and an action that starts and opens the Web interface. Left-clicking
 shows the current lyric in an always-above bubble or system notification. GNOME requires an
 AppIndicator/KStatusNotifier shell extension. If no tray host is available,
 the TUI continues without an icon.
+
+# Ubuntu 26.04 package
+
+Build the amd64 installation package in Ubuntu 26.04 without running it in the
+container:
+
+```bash
+./package/build-deb.sh
+```
+
+The result is written to `package/dist/ctlyrics_0.1.5-1_amd64.deb`. Install it
+on an Ubuntu 26.04 test system with:
+
+```bash
+sudo apt install ./package/dist/ctlyrics_0.1.5-1_amd64.deb
+```
+
+This binary package is intended for manual testing. Official archive source
+packaging will use distribution-provided Rust crates after the remaining crate
+dependencies are available in Resolute Backports.

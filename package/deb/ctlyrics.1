@@ -1,0 +1,49 @@
+.TH CTLYRICS 1 "September 2026" "ctlyrics 0.1.5" "User Commands"
+.SH NAME
+ctlyrics \- terminal lyrics viewer and mapping manager for cmus
+.SH SYNOPSIS
+.B ctlyrics
+.RI [ options ]
+.br
+.B ctlyrics web
+.RI [ --bind address ]
+.RI [ --port port ]
+.SH DESCRIPTION
+.B ctlyrics
+reads playback information from cmus and displays synchronized LRC lyrics in a
+terminal interface. It also provides desktop tray integration and a local Web
+interface for managing lyric mappings.
+.SH OPTIONS
+.TP
+.BR -h , " --help"
+Show command help.
+.TP
+.BR -V , " --version"
+Show the program version.
+.TP
+.BI "--lang " language
+Set the interface language to auto, en, or zh-CN.
+.SH WEB OPTIONS
+.TP
+.BI "--bind " address
+Address to listen on. The default is 127.0.0.1. Use 0.0.0.0 only when network
+access is explicitly required.
+.TP
+.BR -p , " --port " port
+Port to listen on. The default is 3000.
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/ctlyrics/mappings.json
+Music directory and lyric mappings.
+.TP
+.I $XDG_CONFIG_HOME/ctlyrics/language
+Saved TUI and CLI language preference.
+.TP
+.I $XDG_DATA_HOME/ctlyrics/lyrics/
+LRC lyric files.
+.TP
+.I $XDG_STATE_HOME/ctlyrics/
+Application logs.
+.SH SEE ALSO
+.BR cmus (1),
+.BR cmus-remote (1)

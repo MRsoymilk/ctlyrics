@@ -1,0 +1,7 @@
+.git
+target
+package/build
+package/dist
+package/tools
+**/__pycache__
+*.pyc
