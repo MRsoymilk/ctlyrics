@@ -38,5 +38,5 @@ ab_glyph = "0.2"
 image = { version = "0.25", default-features = false, features = ["png"] }
 ksni = { version = "0.3", features = ["blocking"] }
 notify-rust = "4"
-smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop"] }
+smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop"] }
 x11rb = "0.13"
