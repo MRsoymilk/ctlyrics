@@ -9,6 +9,7 @@ use crossterm::{
 };
 use ratatui::Terminal;
 use std::io::{self, Write};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use ctlyrics::cmus::get_cmus_info;
@@ -41,6 +42,14 @@ async fn main() -> Result<()> {
                     .version(env!("CARGO_PKG_VERSION"))
                     .about(tr(command_locale, "web_about").to_string())
                     .arg(
+                        Arg::new("bind")
+                            .long("bind")
+                            .default_value("127.0.0.1")
+                            .value_parser(clap::value_parser!(IpAddr))
+                            .help_heading(tr(command_locale, "cli_options").to_string())
+                            .help(tr(command_locale, "bind_help").to_string()),
+                    )
+                    .arg(
                         Arg::new("port")
                             .short('p')
                             .long("port")
@@ -66,7 +75,10 @@ async fn main() -> Result<()> {
     match matches.subcommand() {
         Some(("web", sub_m)) => {
             let port: u16 = sub_m.get_one::<String>("port").unwrap().parse()?;
-            run_web(port, locale).await
+            let bind = *sub_m
+                .get_one::<IpAddr>("bind")
+                .unwrap_or(&IpAddr::V4(Ipv4Addr::LOCALHOST));
+            run_web(bind, port, locale).await
         }
         _ => {
             let exit = ExitSignal::new();
@@ -206,12 +218,13 @@ impl Drop for TerminalGuard {
     }
 }
 
-async fn run_web(port: u16, locale: Locale) -> Result<()> {
+async fn run_web(bind: IpAddr, port: u16, locale: Locale) -> Result<()> {
     let app = ctlyrics::web::create_router();
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
+    let listener = tokio::net::TcpListener::bind((bind, port)).await?;
+    let url = format!("http://{}", SocketAddr::new(bind, port));
     println!(
         "{}",
-        ctlyrics::i18n::format(locale, "web_running", &[("port", &port.to_string())])
+        ctlyrics::i18n::format(locale, "web_running", &[("url", &url)])
     );
     axum::serve(listener, app).await?;
     Ok(())
