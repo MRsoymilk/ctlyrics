@@ -12,8 +12,8 @@ edition = "2024"
 rust-version = "1.88"
 
 [dependencies]
-ratatui = { version = "0.29", features = ["crossterm"] }
-crossterm = "0.28"
+ratatui = { version = "0.30", features = ["crossterm"] }
+crossterm = "0.29"
 regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
@@ -29,7 +29,7 @@ unicode-width = "0.2"
 
 # Web server
 axum = { version = "0.8", features = ["multipart"] }
-askama = "0.12"
+askama = "0.16"
 tokio = { version = "1", features = ["full"] }
 open = "5"
 
@@ -41,4 +41,4 @@ notify-rust = "4"
 smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop"] }
 x11rb = "0.13"
 nix = { version = "0.30", features = ["fs", "process", "signal", "term"] }
-vt100 = "0.15.2"
+vt100 = "0.16.2"

@@ -132,7 +132,7 @@ impl EmbeddedCmus {
                 };
                 target.reset();
                 if source.has_contents() {
-                    target.set_symbol(&source.contents());
+                    target.set_symbol(source.contents());
                 }
                 target.set_style(cell_style(source));
             }
@@ -167,7 +167,7 @@ impl EmbeddedCmus {
         let cols = cols.max(2);
         let rows = rows.max(2);
         if let Ok(mut parser) = self.parser.lock() {
-            parser.set_size(rows, cols);
+            parser.screen_mut().set_size(rows, cols);
         }
         let Some(writer) = self.writer.as_ref() else {
             return Ok(());
@@ -198,17 +198,10 @@ impl EmbeddedCmus {
             return;
         }
 
-        if let Some(writer) = self.writer.as_mut() {
-            let _ = write_nonblocking(writer, b"\x1b:quit\r");
-        }
-
         if let Some(mut child) = self.child.take() {
             let process_group = Pid::from_raw(child.id() as i32);
-            let exited = wait_for_exit(&mut child, Duration::from_secs(2));
             let _ = killpg(process_group, Signal::SIGTERM);
-            if !exited {
-                let _ = wait_for_exit(&mut child, Duration::from_secs(1));
-            }
+            let _ = wait_for_exit(&mut child, Duration::from_secs(1));
             wait_for_process_group_exit(process_group, Duration::from_secs(1));
             let _ = killpg(process_group, Signal::SIGKILL);
             if child.try_wait().ok().flatten().is_none() {
@@ -752,6 +745,23 @@ mod tests {
         let started = Instant::now();
         session.shutdown();
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn shutdown_does_not_send_terminal_input() {
+        let marker =
+            std::env::temp_dir().join(format!("ctlyrics-shutdown-input-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let command = format!(
+            "trap 'exit 0' TERM; if IFS= read -r line; then : > '{}'; fi",
+            marker.display()
+        );
+        let mut session = EmbeddedCmus::spawn_command("/bin/sh", &["-c", &command], 20, 2).unwrap();
+
+        thread::sleep(Duration::from_millis(50));
+        session.shutdown();
+
+        assert!(!marker.exists());
     }
 
     #[test]
