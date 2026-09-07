@@ -17,9 +17,9 @@ The AppImage uses the host installation of `cmus`, `cmus-remote`, and
 `python3`. The bundled Python tools can be invoked through the AppImage:
 
 ```bash
-./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools get-songs --help
-./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools get-lyrics --help
-./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools auto-map --help
+./package/dist/ctlyrics-0.2.0-x86_64.AppImage tools get-songs --help
+./package/dist/ctlyrics-0.2.0-x86_64.AppImage tools get-lyrics --help
+./package/dist/ctlyrics-0.2.0-x86_64.AppImage tools auto-map --help
 ```
 
 Tool arguments containing relative paths are evaluated from the caller's
@@ -41,11 +41,11 @@ container:
 ./package/build-deb.sh
 ```
 
-The result is written to `package/dist/ctlyrics_0.1.5-1_amd64.deb`. Install it
+The result is written to `package/dist/ctlyrics_0.2.0-1_amd64.deb`. Install it
 on an Ubuntu 26.04 test system with:
 
 ```bash
-sudo apt install ./package/dist/ctlyrics_0.1.5-1_amd64.deb
+sudo apt install ./package/dist/ctlyrics_0.2.0-1_amd64.deb
 ```
 
 This binary package is intended for manual testing. Official archive source

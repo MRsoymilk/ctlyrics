@@ -1,4 +1,4 @@
-.TH CTLYRICS 1 "September 2026" "ctlyrics 0.1.5" "User Commands"
+.TH CTLYRICS 1 "2026-09-07" "ctlyrics 0.2.0" "User Commands"
 .SH NAME
 ctlyrics \- terminal lyrics viewer and mapping manager for cmus
 .SH SYNOPSIS
@@ -10,9 +10,11 @@ ctlyrics \- terminal lyrics viewer and mapping manager for cmus
 .RI [ --port port ]
 .SH DESCRIPTION
 .B ctlyrics
-reads playback information from cmus and displays synchronized LRC lyrics in a
-terminal interface. It also provides desktop tray integration and a local Web
-interface for managing lyric mappings.
+starts cmus in an embedded pseudoterminal when needed, reads its playback
+information, and displays synchronized LRC lyrics. Press Ctrl+W to switch
+between the full-screen cmus and lyrics interfaces. The embedded cmus process
+exits together with ctlyrics. The program also provides desktop tray
+integration and a local Web interface for managing lyric mappings.
 .SH OPTIONS
 .TP
 .BR -h , " --help"
@@ -31,6 +33,17 @@ access is explicitly required.
 .TP
 .BR -p , " --port " port
 Port to listen on. The default is 3000.
+.SH KEYBOARD
+.TP
+.B Ctrl+W
+Switch between the embedded cmus and lyrics interfaces.
+.TP
+.B Ctrl+C
+Quit safely and restore the terminal state from either interface.
+.TP
+.B q
+Quit ctlyrics from the lyrics interface. In the cmus interface, keys other than
+the global Ctrl+W and Ctrl+C shortcuts are passed to cmus.
 .SH FILES
 .TP
 .I $XDG_CONFIG_HOME/ctlyrics/mappings.json

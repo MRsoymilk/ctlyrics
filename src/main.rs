@@ -2,7 +2,10 @@ use anyhow::Result;
 use clap::{Arg, ArgAction, Command};
 use crossterm::{
     cursor::{MoveTo, Show},
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers,
+    },
     execute,
     style::Print,
     terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode},
@@ -12,8 +15,10 @@ use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use ctlyrics::cmus::get_cmus_info;
+use ctlyrics::cmus::{get_cmus_info, probe_cmus};
 use ctlyrics::compatible::tray::{ExitSignal, TrayService};
+#[cfg(target_os = "linux")]
+use ctlyrics::embedded_cmus::EmbeddedCmus;
 use ctlyrics::i18n::{Locale, detect_system_locale, preferred_locale, set_preference, tr};
 use ctlyrics::logger::init_logger;
 use ctlyrics::lyrics_cache::{LyricsCache, current_lyric_line};
@@ -155,10 +160,48 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
 
     let mut player = Player::new(locale);
     let mut lyrics_cache = LyricsCache::new().with_mapping(mapping_store);
+    #[cfg(target_os = "linux")]
+    let (mut embedded_cmus, mut active_view) = {
+        let size = terminal.size()?;
+        match probe_cmus() {
+            Ok(false) => match EmbeddedCmus::spawn(size.width, size.height) {
+                Ok(cmus) => (Some(cmus), ActiveView::Cmus),
+                Err(error) => {
+                    player.show_message(ctlyrics::i18n::format(
+                        locale,
+                        "cmus_start_failed",
+                        &[("error", &error.to_string())],
+                    ));
+                    (None, ActiveView::Lyrics)
+                }
+            },
+            Ok(true) => (None, ActiveView::Lyrics),
+            Err(error) => {
+                player.show_message(ctlyrics::i18n::format(
+                    locale,
+                    "cmus_probe_failed",
+                    &[("error", &error.to_string())],
+                ));
+                (None, ActiveView::Lyrics)
+            }
+        }
+    };
 
     loop {
         if exit.is_requested() {
             break;
+        }
+        #[cfg(target_os = "linux")]
+        if embedded_cmus
+            .as_mut()
+            .is_some_and(|cmus| !cmus.is_running().unwrap_or(false))
+        {
+            embedded_cmus.take();
+            if active_view == ActiveView::Cmus {
+                active_view = ActiveView::Lyrics;
+                terminal.clear()?;
+            }
+            player.show_message(tr(locale, "cmus_exited").to_string());
         }
         let info = get_cmus_info().unwrap_or_default();
         let lyrics = lyrics_cache.load_lyrics(&info.title, Some(&info.artist), Some(&info.file));
@@ -175,19 +218,102 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
             lyric,
         );
 
-        terminal.draw(|frame| player.draw(frame, &info, &lyrics))?;
+        terminal.draw(|frame| {
+            #[cfg(target_os = "linux")]
+            if active_view == ActiveView::Cmus
+                && let Some(cmus) = embedded_cmus.as_ref()
+            {
+                cmus.draw(frame);
+                return;
+            }
+            player.draw(frame, &info, &lyrics);
+        })?;
 
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if player.handle_input(key) {
+                Event::Key(key) if key.kind != KeyEventKind::Release => {
+                    if is_safe_quit(key) {
+                        break;
+                    }
+                    #[cfg(target_os = "linux")]
+                    if is_view_switch(key) && key.kind == KeyEventKind::Press {
+                        match active_view {
+                            ActiveView::Cmus => active_view = ActiveView::Lyrics,
+                            ActiveView::Lyrics => {
+                                if embedded_cmus.is_some() {
+                                    active_view = ActiveView::Cmus;
+                                } else {
+                                    match probe_cmus() {
+                                        Ok(true) => player.show_message(
+                                            tr(locale, "cmus_external_running").to_string(),
+                                        ),
+                                        Ok(false) => {
+                                            let size = terminal.size()?;
+                                            match EmbeddedCmus::spawn(size.width, size.height) {
+                                                Ok(cmus) => {
+                                                    embedded_cmus = Some(cmus);
+                                                    active_view = ActiveView::Cmus;
+                                                }
+                                                Err(error) => {
+                                                    player.show_message(ctlyrics::i18n::format(
+                                                        locale,
+                                                        "cmus_start_failed",
+                                                        &[("error", &error.to_string())],
+                                                    ))
+                                                }
+                                            }
+                                        }
+                                        Err(error) => player.show_message(ctlyrics::i18n::format(
+                                            locale,
+                                            "cmus_probe_failed",
+                                            &[("error", &error.to_string())],
+                                        )),
+                                    }
+                                }
+                            }
+                        }
+                        terminal.clear()?;
+                        continue;
+                    }
+                    #[cfg(target_os = "linux")]
+                    if active_view == ActiveView::Cmus {
+                        if let Some(cmus) = embedded_cmus.as_mut()
+                            && let Err(error) = cmus.send_key(key)
+                        {
+                            active_view = ActiveView::Lyrics;
+                            player.show_message(ctlyrics::i18n::format(
+                                locale,
+                                "cmus_input_failed",
+                                &[("error", &error.to_string())],
+                            ));
+                            terminal.clear()?;
+                        }
+                        continue;
+                    }
+                    if key.kind == KeyEventKind::Press && player.handle_input(key) {
                         break;
                     }
                 }
-                Event::Mouse(mouse) => player.handle_mouse(mouse),
-                Event::Resize(_, _) => {
+                Event::Mouse(mouse) => {
+                    #[cfg(target_os = "linux")]
+                    if active_view == ActiveView::Cmus {
+                        continue;
+                    }
+                    player.handle_mouse(mouse);
+                }
+                Event::Resize(width, height) => {
                     terminal.autoresize()?;
                     terminal.clear()?;
+                    #[cfg(target_os = "linux")]
+                    if let Some(cmus) = embedded_cmus.as_mut()
+                        && let Err(error) = cmus.resize(width, height)
+                    {
+                        player.show_message(ctlyrics::i18n::format(
+                            locale,
+                            "cmus_resize_failed",
+                            &[("error", &error.to_string())],
+                        ));
+                    }
                 }
                 _ => {}
             }
@@ -195,6 +321,24 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActiveView {
+    Lyrics,
+    Cmus,
+}
+
+fn is_safe_quit(key: KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        && key.code == KeyCode::Char('c')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+#[cfg(target_os = "linux")]
+fn is_view_switch(key: KeyEvent) -> bool {
+    key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
 struct TerminalGuard;

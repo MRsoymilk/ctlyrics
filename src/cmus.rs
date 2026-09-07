@@ -1,12 +1,20 @@
 use regex::Regex;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 use thiserror::Error;
+
+const REMOTE_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Error)]
 pub enum CmusError {
+    #[error("cmus-remote is unavailable: {0}")]
+    CommandUnavailable(String),
     #[error("cmus-remote failed: {0}")]
     CommandFailed(String),
+    #[error("cmus-remote timed out")]
+    TimedOut,
 }
 
 pub enum PlaybackCommand {
@@ -23,10 +31,7 @@ pub fn control_cmus(command: PlaybackCommand) -> Result<(), CmusError> {
         PlaybackCommand::Previous => "-r",
         PlaybackCommand::Stop => "-s",
     };
-    let output = Command::new("cmus-remote")
-        .arg(argument)
-        .output()
-        .map_err(|error| CmusError::CommandFailed(error.to_string()))?;
+    let output = run_cmus_remote(&[argument])?;
     if output.status.success() {
         Ok(())
     } else {
@@ -37,10 +42,8 @@ pub fn control_cmus(command: PlaybackCommand) -> Result<(), CmusError> {
 }
 
 pub fn seek_cmus(position: u64) -> Result<(), CmusError> {
-    let output = Command::new("cmus-remote")
-        .args(["-k", &position.to_string()])
-        .output()
-        .map_err(|error| CmusError::CommandFailed(error.to_string()))?;
+    let position = position.to_string();
+    let output = run_cmus_remote(&["-k", &position])?;
     if output.status.success() {
         Ok(())
     } else {
@@ -61,10 +64,7 @@ pub struct CmusInfo {
 }
 
 pub fn get_cmus_info() -> Result<CmusInfo, CmusError> {
-    let output = Command::new("cmus-remote")
-        .arg("-Q")
-        .output()
-        .map_err(|e| CmusError::CommandFailed(e.to_string()))?;
+    let output = run_cmus_remote(&["-Q"])?;
 
     if !output.status.success() {
         return Err(CmusError::CommandFailed(
@@ -74,6 +74,49 @@ pub fn get_cmus_info() -> Result<CmusInfo, CmusError> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_cmus_output(&stdout)
+}
+
+pub fn probe_cmus() -> Result<bool, CmusError> {
+    let output = run_cmus_remote(&["-Q"])?;
+    if output.status.success() {
+        return Ok(true);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.contains("not running") {
+        Ok(false)
+    } else {
+        Err(CmusError::CommandFailed(stderr))
+    }
+}
+
+fn run_cmus_remote(arguments: &[&str]) -> Result<Output, CmusError> {
+    let mut child = Command::new("cmus-remote")
+        .args(arguments)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| CmusError::CommandUnavailable(error.to_string()))?;
+    let deadline = Instant::now() + REMOTE_TIMEOUT;
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|error| CmusError::CommandFailed(error.to_string()));
+            }
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(CmusError::TimedOut);
+            }
+            Err(error) => return Err(CmusError::CommandFailed(error.to_string())),
+        }
+    }
 }
 
 fn parse_cmus_output(output: &str) -> Result<CmusInfo, CmusError> {
