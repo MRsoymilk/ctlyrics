@@ -78,12 +78,16 @@ impl EmbeddedCmus {
         let thread_stop = Arc::clone(&reader_stop);
         let reader = thread::spawn(move || {
             let mut bytes = [0_u8; 8192];
+            let mut decoded = Vec::with_capacity(bytes.len());
+            let mut graphics = DecGraphicsDecoder::default();
             while !thread_stop.load(Ordering::Relaxed) {
                 match reader_file.read(&mut bytes) {
                     Ok(0) => break,
                     Ok(count) => {
+                        decoded.clear();
+                        graphics.process(&bytes[..count], &mut decoded);
                         if let Ok(mut parser) = reader_parser.lock() {
-                            parser.process(&bytes[..count]);
+                            parser.process(&decoded);
                         } else {
                             break;
                         }
@@ -304,6 +308,194 @@ fn color(color: vt100::Color) -> Color {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+enum Charset {
+    #[default]
+    Ascii,
+    DecGraphics,
+}
+
+#[derive(Default)]
+enum DecodeState {
+    #[default]
+    Ground,
+    Escape,
+    EscapeIntermediate,
+    Csi,
+    Osc,
+    OscEscape,
+    String,
+    StringEscape,
+    Designate(usize),
+}
+
+#[derive(Default)]
+struct DecGraphicsDecoder {
+    charsets: [Charset; 2],
+    active: usize,
+    state: DecodeState,
+}
+
+impl DecGraphicsDecoder {
+    fn process(&mut self, input: &[u8], output: &mut Vec<u8>) {
+        for &byte in input {
+            self.process_byte(byte, output);
+        }
+    }
+
+    fn process_byte(&mut self, byte: u8, output: &mut Vec<u8>) {
+        self.state = match self.state {
+            DecodeState::Ground => match byte {
+                0x1b => DecodeState::Escape,
+                0x0e => {
+                    self.active = 1;
+                    DecodeState::Ground
+                }
+                0x0f => {
+                    self.active = 0;
+                    DecodeState::Ground
+                }
+                _ => {
+                    self.write_ground(byte, output);
+                    DecodeState::Ground
+                }
+            },
+            DecodeState::Escape => match byte {
+                b'(' => DecodeState::Designate(0),
+                b')' => DecodeState::Designate(1),
+                b'[' => {
+                    output.extend_from_slice(b"\x1b[");
+                    DecodeState::Csi
+                }
+                b']' => {
+                    output.extend_from_slice(b"\x1b]");
+                    DecodeState::Osc
+                }
+                b'P' | b'X' | b'^' | b'_' => {
+                    output.extend_from_slice(&[0x1b, byte]);
+                    DecodeState::String
+                }
+                0x20..=0x2f => {
+                    output.extend_from_slice(&[0x1b, byte]);
+                    DecodeState::EscapeIntermediate
+                }
+                _ => {
+                    output.extend_from_slice(&[0x1b, byte]);
+                    DecodeState::Ground
+                }
+            },
+            DecodeState::EscapeIntermediate => {
+                output.push(byte);
+                if (0x30..=0x7e).contains(&byte) {
+                    DecodeState::Ground
+                } else {
+                    DecodeState::EscapeIntermediate
+                }
+            }
+            DecodeState::Csi => {
+                output.push(byte);
+                if (0x40..=0x7e).contains(&byte) {
+                    DecodeState::Ground
+                } else {
+                    DecodeState::Csi
+                }
+            }
+            DecodeState::Osc => match byte {
+                0x07 => {
+                    output.push(byte);
+                    DecodeState::Ground
+                }
+                0x1b => DecodeState::OscEscape,
+                _ => {
+                    output.push(byte);
+                    DecodeState::Osc
+                }
+            },
+            DecodeState::OscEscape => {
+                output.extend_from_slice(&[0x1b, byte]);
+                if byte == b'\\' {
+                    DecodeState::Ground
+                } else {
+                    DecodeState::Osc
+                }
+            }
+            DecodeState::String => {
+                if byte == 0x1b {
+                    DecodeState::StringEscape
+                } else {
+                    output.push(byte);
+                    DecodeState::String
+                }
+            }
+            DecodeState::StringEscape => {
+                output.extend_from_slice(&[0x1b, byte]);
+                if byte == b'\\' {
+                    DecodeState::Ground
+                } else {
+                    DecodeState::String
+                }
+            }
+            DecodeState::Designate(index) => {
+                self.charsets[index] = if byte == b'0' {
+                    Charset::DecGraphics
+                } else {
+                    Charset::Ascii
+                };
+                DecodeState::Ground
+            }
+        };
+    }
+
+    fn write_ground(&self, byte: u8, output: &mut Vec<u8>) {
+        if matches!(self.charsets[self.active], Charset::DecGraphics)
+            && let Some(character) = dec_graphics_character(byte)
+        {
+            let mut encoded = [0_u8; 4];
+            output.extend_from_slice(character.encode_utf8(&mut encoded).as_bytes());
+        } else {
+            output.push(byte);
+        }
+    }
+}
+
+fn dec_graphics_character(byte: u8) -> Option<char> {
+    Some(match byte {
+        b'_' => ' ',
+        b'`' => '◆',
+        b'a' => '▒',
+        b'b' => '\u{2409}',
+        b'c' => '\u{240c}',
+        b'd' => '\u{240d}',
+        b'e' => '\u{240a}',
+        b'f' => '°',
+        b'g' => '±',
+        b'h' => '\u{2424}',
+        b'i' => '\u{240b}',
+        b'j' => '┘',
+        b'k' => '┐',
+        b'l' => '┌',
+        b'm' => '└',
+        b'n' => '┼',
+        b'o' => '⎺',
+        b'p' => '⎻',
+        b'q' => '─',
+        b'r' => '⎼',
+        b's' => '⎽',
+        b't' => '├',
+        b'u' => '┤',
+        b'v' => '┴',
+        b'w' => '┬',
+        b'x' => '│',
+        b'y' => '≤',
+        b'z' => '≥',
+        b'{' => 'π',
+        b'|' => '≠',
+        b'}' => '£',
+        b'~' => '·',
+        _ => return None,
+    })
+}
+
 pub fn encode_key(key: KeyEvent, application_cursor: bool) -> Vec<u8> {
     let mut bytes = Vec::new();
 
@@ -490,6 +682,29 @@ mod tests {
         assert_eq!(buffer.cell((4, 0)).unwrap().symbol(), " ");
         assert_eq!(buffer.cell((5, 0)).unwrap().symbol(), "o");
         assert_eq!(buffer.cell((6, 0)).unwrap().symbol(), "k");
+    }
+
+    #[test]
+    fn dec_graphics_charset_renders_ncurses_borders() {
+        let mut decoder = DecGraphicsDecoder::default();
+        let mut decoded = Vec::new();
+        decoder.process(
+            b"\x1b(B\x1b)0\x0ex\x0f <No Name> \x0eqqq\x0f qx",
+            &mut decoded,
+        );
+
+        assert_eq!(String::from_utf8(decoded).unwrap(), "│ <No Name> ─── qx");
+    }
+
+    #[test]
+    fn dec_graphics_state_survives_chunks_and_ignores_csi_bytes() {
+        let mut decoder = DecGraphicsDecoder::default();
+        let mut decoded = Vec::new();
+        decoder.process(b"\x1b(", &mut decoded);
+        decoder.process(b"0lq\x1b[31m", &mut decoded);
+        decoder.process(b"x\x1b(Bqx", &mut decoded);
+
+        assert_eq!(String::from_utf8(decoded).unwrap(), "┌─\x1b[31m│qx");
     }
 
     #[test]
