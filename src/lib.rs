@@ -1,5 +1,7 @@
 pub mod cmus;
 pub mod compatible;
+#[cfg(target_os = "linux")]
+pub mod embedded_cmus;
 pub mod i18n;
 pub mod logger;
 pub mod lyrics_cache;

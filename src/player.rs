@@ -153,7 +153,7 @@ impl Player {
         }
     }
 
-    fn show_message(&mut self, message: String) {
+    pub fn show_message(&mut self, message: String) {
         self.message = message;
         self.message_expires_at = Some(Instant::now() + Duration::from_secs(1));
     }
@@ -323,15 +323,22 @@ impl Player {
     }
 
     fn help_lines(&self) -> Vec<Line<'static>> {
+        let global_entries: &[(&str, &str)] = if cfg!(target_os = "linux") {
+            &[
+                ("h / ?", tr(self.locale, "help_open")),
+                ("Ctrl+W", tr(self.locale, "help_switch_view")),
+                ("q", tr(self.locale, "help_quit")),
+                ("Ctrl+C", tr(self.locale, "help_safe_quit")),
+            ]
+        } else {
+            &[
+                ("h / ?", tr(self.locale, "help_open")),
+                ("q", tr(self.locale, "help_quit")),
+                ("Ctrl+C", tr(self.locale, "help_safe_quit")),
+            ]
+        };
         let sections: &[(&str, &[(&str, &str)])] = &[
-            (
-                tr(self.locale, "help_section_global"),
-                &[
-                    ("h / ?", tr(self.locale, "help_open")),
-                    ("q", tr(self.locale, "help_quit")),
-                    ("Ctrl+C", tr(self.locale, "help_safe_quit")),
-                ],
-            ),
+            (tr(self.locale, "help_section_global"), global_entries),
             (
                 tr(self.locale, "help_section_navigation"),
                 &[

@@ -25,6 +25,8 @@ web mode:
 ## Features
 
 - Display synchronized lyrics for the current cmus track in the terminal
+- On Linux, start cmus in an embedded terminal when it is not already running
+- Switch between the full-screen cmus and lyrics interfaces with `Ctrl+W`
 - Prefer cmus `title` and `artist` tags, with fallback parsing from `title-artist.ext`
 - Match lyrics by music path or by title and artist
 - Adjust lyric timing with the arrow keys
@@ -42,7 +44,7 @@ web mode:
 ## Requirements
 
 - Rust 1.88 or newer (Rust 2024 Edition)
-- cmus installed and running
+- cmus installed; ctlyrics starts it automatically when needed
 - A working `cmus-remote -Q` command
 - A graphical browser when using `:web`
 
@@ -87,6 +89,12 @@ Or run it through Cargo:
 cargo run
 ```
 
+If cmus is not running, ctlyrics starts it in an embedded pseudoterminal and
+opens the cmus interface first. Press `Ctrl+W` to switch between cmus and the
+lyrics. The embedded cmus process exits together with ctlyrics. An existing
+cmus process in another terminal continues to work for lyrics and playback
+control, but its ncurses interface cannot be attached to ctlyrics.
+
 ### AppImage
 
 Install the local packaging dependency and build the AppImage with the bundled scripts:
@@ -99,9 +107,9 @@ Install the local packaging dependency and build the AppImage with the bundled s
 Artifacts are written to `package/dist/`. The AppImage bundles the three Python tools from `tools/` behind a common entry point:
 
 ```bash
-./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools get-songs /path/to/music
-./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools get-lyrics songs_list.txt
-./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools auto-map --help
+./package/dist/ctlyrics-0.2.0-x86_64.AppImage tools get-songs /path/to/music
+./package/dist/ctlyrics-0.2.0-x86_64.AppImage tools get-lyrics songs_list.txt
+./package/dist/ctlyrics-0.2.0-x86_64.AppImage tools auto-map --help
 ```
 
 The tools invoke the host's `python3` directly without checking whether it is installed. The host must also provide `cmus` and `cmus-remote`. See [`package/README.md`](package/README.md) for packaging details.
@@ -122,6 +130,7 @@ Select the interface language:
 |---|---|
 | `q` | Quit |
 | `Ctrl+C` | Quit safely and restore the terminal state |
+| `Ctrl+W` | Switch between the cmus and lyrics interfaces |
 | `h` / `?` | Open or close the tree-style help page |
 | `Space` | Play / pause |
 | `n` | Next track |

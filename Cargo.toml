@@ -1,6 +1,6 @@
 [package]
 name = "ctlyrics"
-version = "0.1.5"
+version = "0.2.0"
 authors = ["MRsoymilk <codermrsoymilk@gmail.com>"]
 description = "A terminal lyrics viewer and mapping manager for cmus"
 license = "MIT"
@@ -40,3 +40,5 @@ ksni = { version = "0.3", features = ["blocking"] }
 notify-rust = "4"
 smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop"] }
 x11rb = "0.13"
+nix = { version = "0.30", features = ["fs", "process", "signal", "term"] }
+vt100 = "0.15.2"

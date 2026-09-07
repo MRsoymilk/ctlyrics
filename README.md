@@ -25,6 +25,8 @@ web 模式：
 ## 功能
 
 - 在终端中同步显示 cmus 当前歌曲歌词
+- 在 Linux 上，cmus 未运行时在内嵌终端中自动启动
+- 使用 `Ctrl+W` 在全屏 cmus 和歌词界面之间切换
 - 优先读取 cmus 的 `title`、`artist` 标签，并支持从 `歌曲名-歌手.ext` 文件名回退解析
 - 支持按音乐文件路径或标题、歌手匹配歌词
 - 支持使用方向键调整歌词时间偏移
@@ -43,7 +45,7 @@ web 模式：
 ## 环境要求
 
 - Rust 1.88 或更高版本（项目使用 Rust 2024 Edition）
-- 已安装并运行 `cmus`
+- 已安装 `cmus`；需要时 ctlyrics 会自动启动
 - `cmus-remote -Q` 能够正常返回当前歌曲信息
 - 使用 `:web` 时需要可用的图形浏览器
 
@@ -88,6 +90,11 @@ target/release/ctlyrics
 cargo run
 ```
 
+如果 cmus 尚未运行，ctlyrics 会在内嵌伪终端中启动 cmus，并首先显示
+cmus 界面。按 `Ctrl+W` 可在 cmus 和歌词之间切换；退出 ctlyrics 时，
+内嵌的 cmus 也会退出。如果 cmus 已在其他终端运行，歌词和播放控制仍可
+正常使用，但其 ncurses 界面无法附加到 ctlyrics。
+
 ### AppImage
 
 使用仓库内脚本安装本地打包依赖并生成 AppImage：
@@ -100,9 +107,9 @@ cargo run
 产物保存在 `package/dist/`。AppImage 内置 `tools/` 下的三个 Python 工具，可通过统一入口调用：
 
 ```bash
-./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools get-songs /path/to/music
-./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools get-lyrics songs_list.txt
-./package/dist/ctlyrics-0.1.5-x86_64.AppImage tools auto-map --help
+./package/dist/ctlyrics-0.2.0-x86_64.AppImage tools get-songs /path/to/music
+./package/dist/ctlyrics-0.2.0-x86_64.AppImage tools get-lyrics songs_list.txt
+./package/dist/ctlyrics-0.2.0-x86_64.AppImage tools auto-map --help
 ```
 
 Python 工具直接调用宿主系统的 `python3`，不会预先检查是否安装。`cmus` 和 `cmus-remote` 也由宿主系统提供。详细打包说明见 [`package/README.md`](package/README.md)。
@@ -123,6 +130,7 @@ Linux 托盘优先使用 StatusNotifierItem，兼容 KDE Plasma 和启用 `tray`
 |---|---|
 | `q` | 退出程序 |
 | `Ctrl+C` | 安全退出并恢复终端状态 |
+| `Ctrl+W` | 在 cmus 和歌词界面之间切换 |
 | `h` / `?` | 打开或关闭树状帮助页 |
 | `空格` | 播放 / 暂停 |
 | `n` | 下一首 |
