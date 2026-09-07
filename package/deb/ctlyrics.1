@@ -44,6 +44,11 @@ Quit safely and restore the terminal state from either interface.
 .B q
 Quit ctlyrics from the lyrics interface. In the cmus interface, keys other than
 the global Ctrl+W and Ctrl+C shortcuts are passed to cmus.
+.SH MOUSE
+Left-click the tray icon to show or hide the current lyric bubble. Drag the
+bubble to move it. Scroll over the tray icon to switch between horizontal and
+vertical lyrics. Scroll up over the bubble to increase its font size and scroll
+down to decrease it. The selected size is saved for future runs.
 .SH FILES
 .TP
 .I $XDG_CONFIG_HOME/ctlyrics/mappings.json
@@ -51,6 +56,9 @@ Music directory and lyric mappings.
 .TP
 .I $XDG_CONFIG_HOME/ctlyrics/language
 Saved TUI and CLI language preference.
+.TP
+.I $XDG_CONFIG_HOME/ctlyrics/bubble-font-size
+Saved lyric bubble font size.
 .TP
 .I $XDG_DATA_HOME/ctlyrics/lyrics/
 LRC lyric files.

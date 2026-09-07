@@ -1,10 +1,15 @@
 use std::fs;
+use std::io;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
 use ab_glyph::{Font, FontVec, GlyphId, PxScale, ScaleFont, point};
 
-const FONT_SIZE: f32 = 14.0;
+pub(super) const DEFAULT_FONT_SIZE: u16 = 14;
+const MIN_FONT_SIZE: u16 = 10;
+const MAX_FONT_SIZE: u16 = 48;
+const FONT_SIZE_STEP: u16 = 2;
 const PADDING: usize = 14;
 const MAX_WIDTH: u16 = 520;
 const SCROLL_GAP: usize = 48;
@@ -27,10 +32,10 @@ pub(super) enum LyricOrientation {
 }
 
 impl LyricBubbleContent {
-    pub(super) fn new(font: &FontVec, text: &str) -> Self {
+    pub(super) fn new(font: &FontVec, text: &str, font_size: u16) -> Self {
         Self {
-            horizontal: rasterize_text(font, text),
-            vertical: rasterize_vertical_text(font, text),
+            horizontal: rasterize_text_at_size(font, text, font_size),
+            vertical: rasterize_vertical_text(font, text, font_size),
         }
     }
 
@@ -40,6 +45,38 @@ impl LyricBubbleContent {
             LyricOrientation::Vertical => &self.vertical,
         }
     }
+}
+
+pub(super) fn load_font_size() -> u16 {
+    load_font_size_from(&crate::paths::get().bubble_font_size_file())
+}
+
+pub(super) fn save_font_size(font_size: u16) -> io::Result<()> {
+    let path = crate::paths::get().bubble_font_size_file();
+    save_font_size_to(&path, font_size)
+}
+
+fn save_font_size_to(path: &Path, font_size: u16) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, font_size.to_string())
+}
+
+pub(super) fn adjusted_font_size(font_size: u16, increase: bool) -> u16 {
+    if increase {
+        font_size.saturating_add(FONT_SIZE_STEP).min(MAX_FONT_SIZE)
+    } else {
+        font_size.saturating_sub(FONT_SIZE_STEP).max(MIN_FONT_SIZE)
+    }
+}
+
+fn load_font_size_from(path: &Path) -> u16 {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .filter(|value| (MIN_FONT_SIZE..=MAX_FONT_SIZE).contains(value))
+        .unwrap_or(DEFAULT_FONT_SIZE)
 }
 
 pub(super) fn load_font(sample: &str) -> Option<FontVec> {
@@ -84,7 +121,11 @@ pub(super) fn font_supports(font: &FontVec, text: &str) -> bool {
 }
 
 pub(super) fn rasterize_text(font: &FontVec, text: &str) -> RasterizedText {
-    let scale = PxScale::from(FONT_SIZE);
+    rasterize_text_at_size(font, text, DEFAULT_FONT_SIZE)
+}
+
+fn rasterize_text_at_size(font: &FontVec, text: &str, font_size: u16) -> RasterizedText {
+    let scale = PxScale::from(f32::from(font_size));
     let scaled = font.as_scaled(scale);
     let mut caret = 0.0;
     let mut previous = None;
@@ -202,18 +243,18 @@ pub(super) fn render_lyric_bubble(
     (pixels, width, height)
 }
 
-fn rasterize_vertical_text(font: &FontVec, text: &str) -> RasterizedText {
+fn rasterize_vertical_text(font: &FontVec, text: &str, font_size: u16) -> RasterizedText {
     let glyphs: Vec<_> = text
         .chars()
         .filter(|character| !matches!(character, '\r' | '\n'))
-        .map(|character| rasterize_text(font, &character.to_string()))
+        .map(|character| rasterize_text_at_size(font, &character.to_string(), font_size))
         .collect();
     let cell_height = glyphs
         .iter()
         .map(|glyph| glyph.height)
         .max()
         .unwrap_or(0)
-        .max(FONT_SIZE.ceil() as usize);
+        .max(usize::from(font_size));
     stack_vertical_glyphs(&glyphs, cell_height)
 }
 
@@ -360,6 +401,36 @@ fn blend_pixel(pixels: &mut [u8], width: u16, x: usize, y: usize, alpha: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_file() -> std::path::PathBuf {
+        let id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("ctlyrics-font-size-{id}"))
+    }
+
+    #[test]
+    fn font_size_is_adjusted_within_bounds() {
+        assert_eq!(adjusted_font_size(DEFAULT_FONT_SIZE, true), 16);
+        assert_eq!(adjusted_font_size(DEFAULT_FONT_SIZE, false), 12);
+        assert_eq!(adjusted_font_size(MAX_FONT_SIZE, true), MAX_FONT_SIZE);
+        assert_eq!(adjusted_font_size(MIN_FONT_SIZE, false), MIN_FONT_SIZE);
+    }
+
+    #[test]
+    fn persisted_font_size_rejects_invalid_values() {
+        let path = temporary_file();
+        assert_eq!(load_font_size_from(&path), DEFAULT_FONT_SIZE);
+
+        save_font_size_to(&path, 32).unwrap();
+        assert_eq!(load_font_size_from(&path), 32);
+
+        fs::write(&path, "100").unwrap();
+        assert_eq!(load_font_size_from(&path), DEFAULT_FONT_SIZE);
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn vertical_glyphs_are_stacked_upright_from_top_to_bottom() {

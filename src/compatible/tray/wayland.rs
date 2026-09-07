@@ -42,7 +42,10 @@ use smithay_client_toolkit::{
     },
 };
 
-use super::bubble::{LyricBubbleContent, LyricOrientation, load_font, render_lyric_bubble};
+use super::bubble::{
+    LyricBubbleContent, LyricOrientation, adjusted_font_size, load_font, load_font_size,
+    render_lyric_bubble, save_font_size,
+};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(40);
 const DRAG_THRESHOLD: f64 = 4.0;
@@ -193,6 +196,7 @@ struct State {
     screen_size: (u16, u16),
     content: Option<LyricBubbleContent>,
     lyric: String,
+    font_size: u16,
     orientation: LyricOrientation,
     position: Option<(i32, i32)>,
     drag: Option<DragState>,
@@ -261,7 +265,8 @@ fn initialize(
     }
     let shm = Shm::bind(&globals, &qh)?;
     let font = load_font(&initial_lyric).context("no usable lyric font")?;
-    let content = Some(LyricBubbleContent::new(&font, &initial_lyric));
+    let font_size = load_font_size();
+    let content = Some(LyricBubbleContent::new(&font, &initial_lyric, font_size));
     let pool = SlotPool::new(4096, &shm)?;
     let state = State {
         registry_state: RegistryState::new(&globals),
@@ -281,6 +286,7 @@ fn initialize(
         screen_size: (RENDER_SCREEN_WIDTH, RENDER_SCREEN_HEIGHT),
         content,
         lyric: initial_lyric,
+        font_size,
         orientation: LyricOrientation::Horizontal,
         position: None,
         drag: None,
@@ -333,7 +339,7 @@ impl State {
     fn rebuild_content(&mut self) {
         self.content = load_font(&self.lyric)
             .as_ref()
-            .map(|font| LyricBubbleContent::new(font, &self.lyric));
+            .map(|font| LyricBubbleContent::new(font, &self.lyric, self.font_size));
     }
 
     fn rendered(&self) -> Option<(Vec<u8>, u16, u16)> {
@@ -510,11 +516,15 @@ impl State {
         if delta == 0.0 {
             return;
         }
-        self.orientation = if delta > 0.0 {
-            LyricOrientation::Vertical
-        } else {
-            LyricOrientation::Horizontal
-        };
+        let font_size = adjusted_font_size(self.font_size, delta < 0.0);
+        if font_size == self.font_size {
+            return;
+        }
+        self.font_size = font_size;
+        if let Err(error) = save_font_size(font_size) {
+            tracing::debug!(%error, "failed to save lyric font size");
+        }
+        self.rebuild_content();
         self.animation_started = Instant::now();
         self.dirty = true;
         self.update_size();

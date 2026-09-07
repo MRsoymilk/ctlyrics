@@ -36,6 +36,10 @@ impl AppPaths {
         self.config_dir.join("language")
     }
 
+    pub fn bubble_font_size_file(&self) -> PathBuf {
+        self.config_dir.join("bubble-font-size")
+    }
+
     pub fn lyrics_dir(&self) -> PathBuf {
         self.data_dir.join("lyrics")
     }

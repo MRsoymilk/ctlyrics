@@ -21,8 +21,8 @@ use crate::web::start_and_open;
 use super::{
     ExitSignal, PlaybackInfo, PlaybackSnapshot,
     bubble::{
-        LyricBubbleContent, LyricOrientation, RasterizedText, font_supports, load_font,
-        rasterize_text, render_lyric_bubble,
+        LyricBubbleContent, LyricOrientation, RasterizedText, adjusted_font_size, font_supports,
+        load_font, load_font_size, rasterize_text, render_lyric_bubble, save_font_size,
     },
     icon::rgba_icon,
     progress_offset, seek_from_progress,
@@ -393,9 +393,10 @@ fn run_tray(
     let mut menu_content = menu_font
         .as_ref()
         .map(|font| MenuContent::new(font, &playback_snapshot.line, web_label, quit_label));
+    let mut bubble_font_size = load_font_size();
     let mut bubble_text = menu_font
         .as_ref()
-        .map(|font| LyricBubbleContent::new(font, &playback_snapshot.lyric));
+        .map(|font| LyricBubbleContent::new(font, &playback_snapshot.lyric, bubble_font_size));
     let mut icon_width = ICON_SIZE;
     let mut icon_height = ICON_SIZE;
     let mut menu_open = false;
@@ -427,9 +428,9 @@ fn run_tray(
             menu_content = menu_font
                 .as_ref()
                 .map(|font| MenuContent::new(font, &current_snapshot.line, web_label, quit_label));
-            bubble_text = menu_font
-                .as_ref()
-                .map(|font| LyricBubbleContent::new(font, &current_snapshot.lyric));
+            bubble_text = menu_font.as_ref().map(|font| {
+                LyricBubbleContent::new(font, &current_snapshot.lyric, bubble_font_size)
+            });
             menu_opened_at = Instant::now();
             bubble_started_at = Instant::now();
             last_bubble_draw = Instant::now() - BUBBLE_FRAME_INTERVAL;
@@ -556,8 +557,7 @@ fn run_tray(
                     }
                 }
                 Event::ButtonPress(event)
-                    if (event.event == icon || event.event == bubble)
-                        && matches!(event.detail, 4 | 5) =>
+                    if event.event == icon && matches!(event.detail, 4 | 5) =>
                 {
                     bubble_orientation = match event.detail {
                         4 => LyricOrientation::Horizontal,
@@ -565,6 +565,26 @@ fn run_tray(
                     };
                     bubble_started_at = Instant::now();
                     last_bubble_draw = Instant::now() - BUBBLE_FRAME_INTERVAL;
+                }
+                Event::ButtonPress(event)
+                    if event.event == bubble && matches!(event.detail, 4 | 5) =>
+                {
+                    let font_size = adjusted_font_size(bubble_font_size, event.detail == 4);
+                    if font_size != bubble_font_size {
+                        bubble_font_size = font_size;
+                        if let Err(error) = save_font_size(font_size) {
+                            tracing::debug!(%error, "failed to save lyric font size");
+                        }
+                        bubble_text = menu_font.as_ref().map(|font| {
+                            LyricBubbleContent::new(
+                                font,
+                                &playback_snapshot.lyric,
+                                bubble_font_size,
+                            )
+                        });
+                        bubble_started_at = Instant::now();
+                        last_bubble_draw = Instant::now() - BUBBLE_FRAME_INTERVAL;
+                    }
                 }
                 Event::ButtonPress(event) if event.event == icon && event.detail == 3 => {
                     if bubble_visible {
