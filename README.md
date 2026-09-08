@@ -95,6 +95,10 @@ cmus 界面。按 `Ctrl+W` 可在 cmus 和歌词之间切换；退出 ctlyrics �
 内嵌的 cmus 也会退出。如果 cmus 已在其他终端运行，歌词和播放控制仍可
 正常使用，但其 ncurses 界面无法附加到 ctlyrics。
 
+内嵌 cmus 支持鼠标点击和滚轮，但需要先在 cmus 中执行 `:set mouse=true`，
+再执行 `:save` 保存设置。未启用 cmus 鼠标协议时，ctlyrics 会将纵向滚轮
+转换为方向键，与多数终端直接运行 cmus 时的滚轮回退行为一致。
+
 ### AppImage
 
 使用仓库内脚本安装本地打包依赖并生成 AppImage：

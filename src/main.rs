@@ -15,7 +15,7 @@ use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use ctlyrics::cmus::{get_cmus_info, probe_cmus};
+use ctlyrics::cmus::{CmusInfoPoller, probe_cmus};
 use ctlyrics::compatible::tray::{ExitSignal, TrayService};
 #[cfg(target_os = "linux")]
 use ctlyrics::embedded_cmus::EmbeddedCmus;
@@ -152,7 +152,9 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
         stdout,
         Clear(ClearType::All),
         MoveTo(0, 0),
-        EnableMouseCapture
+        EnableMouseCapture,
+        // Crossterm also enables all-motion tracking, which floods the event queue.
+        Print("\x1b[?1003l")
     )?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -186,6 +188,7 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
             }
         }
     };
+    let cmus_info = CmusInfoPoller::new();
 
     loop {
         if exit.is_requested() {
@@ -203,7 +206,7 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
             }
             player.show_message(tr(locale, "cmus_exited").to_string());
         }
-        let info = get_cmus_info().unwrap_or_default();
+        let info = cmus_info.latest();
         let lyrics = lyrics_cache.load_lyrics(&info.title, Some(&info.artist), Some(&info.file));
         let lyric = current_lyric_line(&lyrics, info.position as f64 + player.lyric_offset())
             .map(|line| line.text.as_str())
@@ -297,6 +300,17 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
                 Event::Mouse(mouse) => {
                     #[cfg(target_os = "linux")]
                     if active_view == ActiveView::Cmus {
+                        if let Some(cmus) = embedded_cmus.as_mut()
+                            && let Err(error) = cmus.send_mouse(mouse)
+                        {
+                            active_view = ActiveView::Lyrics;
+                            player.show_message(ctlyrics::i18n::format(
+                                locale,
+                                "cmus_input_failed",
+                                &[("error", &error.to_string())],
+                            ));
+                            terminal.clear()?;
+                        }
                         continue;
                     }
                     player.handle_mouse(mouse);

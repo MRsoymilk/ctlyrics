@@ -1,11 +1,17 @@
 use regex::Regex;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
-use std::thread;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
 const REMOTE_TIMEOUT: Duration = Duration::from_secs(1);
+const STATUS_TIMEOUT: Duration = Duration::from_millis(100);
+const STATUS_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Error)]
 pub enum CmusError {
@@ -31,7 +37,7 @@ pub fn control_cmus(command: PlaybackCommand) -> Result<(), CmusError> {
         PlaybackCommand::Previous => "-r",
         PlaybackCommand::Stop => "-s",
     };
-    let output = run_cmus_remote(&[argument])?;
+    let output = run_cmus_remote(&[argument], REMOTE_TIMEOUT)?;
     if output.status.success() {
         Ok(())
     } else {
@@ -43,7 +49,7 @@ pub fn control_cmus(command: PlaybackCommand) -> Result<(), CmusError> {
 
 pub fn seek_cmus(position: u64) -> Result<(), CmusError> {
     let position = position.to_string();
-    let output = run_cmus_remote(&["-k", &position])?;
+    let output = run_cmus_remote(&["-k", &position], REMOTE_TIMEOUT)?;
     if output.status.success() {
         Ok(())
     } else {
@@ -63,8 +69,78 @@ pub struct CmusInfo {
     pub file: String,
 }
 
+pub struct CmusInfoPoller {
+    latest: Arc<Mutex<CmusInfo>>,
+    stop: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl CmusInfoPoller {
+    pub fn new() -> Self {
+        Self::with_fetcher(|| get_cmus_info_with_timeout(STATUS_TIMEOUT))
+    }
+
+    fn with_fetcher<F>(fetch: F) -> Self
+    where
+        F: Fn() -> Result<CmusInfo, CmusError> + Send + 'static,
+    {
+        let latest = Arc::new(Mutex::new(CmusInfo::default()));
+        let worker_latest = Arc::clone(&latest);
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let worker = thread::spawn(move || {
+            while !worker_stop.load(Ordering::Relaxed) {
+                if let Ok(info) = fetch()
+                    && let Ok(mut latest) = worker_latest.lock()
+                {
+                    *latest = info;
+                }
+                sleep_until_next_poll(&worker_stop);
+            }
+        });
+        Self {
+            latest,
+            stop,
+            worker: Some(worker),
+        }
+    }
+
+    pub fn latest(&self) -> CmusInfo {
+        self.latest
+            .lock()
+            .map(|info| info.clone())
+            .unwrap_or_default()
+    }
+}
+
+impl Default for CmusInfoPoller {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for CmusInfoPoller {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn sleep_until_next_poll(stop: &AtomicBool) {
+    let deadline = Instant::now() + STATUS_INTERVAL;
+    while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 pub fn get_cmus_info() -> Result<CmusInfo, CmusError> {
-    let output = run_cmus_remote(&["-Q"])?;
+    get_cmus_info_with_timeout(REMOTE_TIMEOUT)
+}
+
+fn get_cmus_info_with_timeout(timeout: Duration) -> Result<CmusInfo, CmusError> {
+    let output = run_cmus_remote(&["-Q"], timeout)?;
 
     if !output.status.success() {
         return Err(CmusError::CommandFailed(
@@ -77,7 +153,7 @@ pub fn get_cmus_info() -> Result<CmusInfo, CmusError> {
 }
 
 pub fn probe_cmus() -> Result<bool, CmusError> {
-    let output = run_cmus_remote(&["-Q"])?;
+    let output = run_cmus_remote(&["-Q"], REMOTE_TIMEOUT)?;
     if output.status.success() {
         return Ok(true);
     }
@@ -90,14 +166,14 @@ pub fn probe_cmus() -> Result<bool, CmusError> {
     }
 }
 
-fn run_cmus_remote(arguments: &[&str]) -> Result<Output, CmusError> {
+fn run_cmus_remote(arguments: &[&str], timeout: Duration) -> Result<Output, CmusError> {
     let mut child = Command::new("cmus-remote")
         .args(arguments)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| CmusError::CommandUnavailable(error.to_string()))?;
-    let deadline = Instant::now() + REMOTE_TIMEOUT;
+    let deadline = Instant::now() + timeout;
 
     loop {
         match child.try_wait() {
@@ -189,4 +265,31 @@ fn parse_cmus_output(output: &str) -> Result<CmusInfo, CmusError> {
         artist,
         file,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn poller_snapshot_does_not_wait_for_a_blocked_fetch() {
+        let (started_tx, started_rx) = mpsc::sync_channel(0);
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+        let first_fetch = AtomicBool::new(true);
+        let poller = CmusInfoPoller::with_fetcher(move || {
+            if first_fetch.swap(false, Ordering::Relaxed) {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            }
+            Err(CmusError::TimedOut)
+        });
+
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let info = poller.latest();
+        assert!(info.title.is_empty());
+
+        release_tx.send(()).unwrap();
+        drop(poller);
+    }
 }
