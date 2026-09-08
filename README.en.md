@@ -95,6 +95,11 @@ lyrics. The embedded cmus process exits together with ctlyrics. An existing
 cmus process in another terminal continues to work for lyrics and playback
 control, but its ncurses interface cannot be attached to ctlyrics.
 
+The embedded cmus interface supports mouse clicks and scrolling after running
+`:set mouse=true` in cmus. Run `:save` to keep that setting. ctlyrics forwards
+mouse events while cmus has enabled its mouse protocol. Otherwise, vertical
+scroll events fall back to cursor keys, matching direct cmus use in most terminals.
+
 ### AppImage
 
 Install the local packaging dependency and build the AppImage with the bundled scripts:

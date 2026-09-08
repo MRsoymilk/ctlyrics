@@ -45,6 +45,15 @@ Quit safely and restore the terminal state from either interface.
 Quit ctlyrics from the lyrics interface. In the cmus interface, keys other than
 the global Ctrl+W and Ctrl+C shortcuts are passed to cmus.
 .SH MOUSE
+Mouse input in the embedded cmus interface is forwarded when the cmus
+.B mouse
+option is enabled. Run
+.B :set mouse=true
+and
+.B :save
+in cmus to enable it permanently. When the option is disabled, vertical scroll
+events are translated to cursor keys to match direct cmus use in most terminals.
+.PP
 Left-click the tray icon to show or hide the current lyric bubble. Drag the
 bubble to move it. Scroll over the tray icon to switch between horizontal and
 vertical lyrics. Scroll up over the bubble to increase its font size and scroll

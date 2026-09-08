@@ -18,7 +18,7 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 pub struct EmbeddedCmus {
     parser: Arc<Mutex<vt100::Parser>>,
@@ -153,6 +153,30 @@ impl EmbeddedCmus {
             .map(|parser| parser.screen().application_cursor())
             .unwrap_or(false);
         let bytes = encode_key(key, application_cursor);
+        if !bytes.is_empty() {
+            let writer = self
+                .writer
+                .as_mut()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "cmus PTY is closed"))?;
+            write_nonblocking(writer, &bytes)?;
+        }
+        Ok(())
+    }
+
+    pub fn send_mouse(&mut self, event: MouseEvent) -> io::Result<()> {
+        let (mode, encoding, application_cursor) = self
+            .parser
+            .lock()
+            .map(|parser| {
+                let screen = parser.screen();
+                (
+                    screen.mouse_protocol_mode(),
+                    screen.mouse_protocol_encoding(),
+                    screen.application_cursor(),
+                )
+            })
+            .unwrap_or_default();
+        let bytes = encode_mouse(event, mode, encoding, application_cursor);
         if !bytes.is_empty() {
             let writer = self
                 .writer
@@ -538,6 +562,98 @@ pub fn encode_key(key: KeyEvent, application_cursor: bool) -> Vec<u8> {
     bytes
 }
 
+pub fn encode_mouse(
+    event: MouseEvent,
+    mode: vt100::MouseProtocolMode,
+    encoding: vt100::MouseProtocolEncoding,
+    application_cursor: bool,
+) -> Vec<u8> {
+    use vt100::MouseProtocolMode::{AnyMotion, ButtonMotion, None, Press};
+
+    if mode == None {
+        let key = match event.kind {
+            MouseEventKind::ScrollUp => KeyCode::Up,
+            MouseEventKind::ScrollDown => KeyCode::Down,
+            _ => return Vec::new(),
+        };
+        return encode_key(KeyEvent::new(key, KeyModifiers::NONE), application_cursor);
+    }
+
+    if matches!(event.kind, MouseEventKind::Up(_)) && mode == Press
+        || matches!(event.kind, MouseEventKind::Drag(_))
+            && !matches!(mode, ButtonMotion | AnyMotion)
+        || event.kind == MouseEventKind::Moved && mode != AnyMotion
+    {
+        return Vec::new();
+    }
+
+    let modifiers = u8::from(event.modifiers.contains(KeyModifiers::SHIFT)) * 4
+        + u8::from(event.modifiers.contains(KeyModifiers::ALT)) * 8
+        + u8::from(event.modifiers.contains(KeyModifiers::CONTROL)) * 16;
+    let (button, release) = match event.kind {
+        MouseEventKind::Down(button) => (mouse_button(button), false),
+        MouseEventKind::Up(button) => (mouse_button(button), true),
+        MouseEventKind::Drag(button) => (mouse_button(button) + 32, false),
+        MouseEventKind::Moved => (35, false),
+        MouseEventKind::ScrollUp => (64, false),
+        MouseEventKind::ScrollDown => (65, false),
+        MouseEventKind::ScrollLeft => (66, false),
+        MouseEventKind::ScrollRight => (67, false),
+    };
+    let button = button + modifiers;
+
+    match encoding {
+        vt100::MouseProtocolEncoding::Sgr => format!(
+            "\x1b[<{button};{};{}{}",
+            u32::from(event.column) + 1,
+            u32::from(event.row) + 1,
+            if release { 'm' } else { 'M' }
+        )
+        .into_bytes(),
+        vt100::MouseProtocolEncoding::Default => {
+            let x = event
+                .column
+                .checked_add(33)
+                .and_then(|value| u8::try_from(value).ok());
+            let y = event
+                .row
+                .checked_add(33)
+                .and_then(|value| u8::try_from(value).ok());
+            match (x, y) {
+                (Some(x), Some(y)) => {
+                    vec![0x1b, b'[', b'M', legacy_button(button, release) + 32, x, y]
+                }
+                _ => Vec::new(),
+            }
+        }
+        vt100::MouseProtocolEncoding::Utf8 => {
+            let mut bytes = vec![0x1b, b'[', b'M', legacy_button(button, release) + 32];
+            push_utf8_number(&mut bytes, u32::from(event.column) + 33);
+            push_utf8_number(&mut bytes, u32::from(event.row) + 33);
+            bytes
+        }
+    }
+}
+
+fn mouse_button(button: MouseButton) -> u8 {
+    match button {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+    }
+}
+
+fn legacy_button(button: u8, release: bool) -> u8 {
+    if release { (button & !3) | 3 } else { button }
+}
+
+fn push_utf8_number(bytes: &mut Vec<u8>, value: u32) {
+    if let Some(character) = char::from_u32(value) {
+        let mut encoded = [0; 4];
+        bytes.extend_from_slice(character.encode_utf8(&mut encoded).as_bytes());
+    }
+}
+
 fn prepend_alt(bytes: &mut Vec<u8>, modifiers: KeyModifiers) {
     if modifiers.contains(KeyModifiers::ALT) {
         bytes.push(0x1b);
@@ -652,6 +768,133 @@ mod tests {
         assert_eq!(
             encode_key(KeyEvent::new(KeyCode::F(5), KeyModifiers::SHIFT), false),
             b"\x1b[15;2~"
+        );
+    }
+
+    fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn falls_back_to_cursor_keys_when_child_mouse_mode_is_disabled() {
+        assert_eq!(
+            encode_mouse(
+                mouse_event(MouseEventKind::ScrollUp, 4, 2),
+                vt100::MouseProtocolMode::None,
+                vt100::MouseProtocolEncoding::Sgr,
+                false,
+            ),
+            b"\x1b[A"
+        );
+        assert_eq!(
+            encode_mouse(
+                mouse_event(MouseEventKind::ScrollDown, 4, 2),
+                vt100::MouseProtocolMode::None,
+                vt100::MouseProtocolEncoding::Sgr,
+                true,
+            ),
+            b"\x1bOB"
+        );
+        assert!(
+            encode_mouse(
+                mouse_event(MouseEventKind::Down(MouseButton::Left), 4, 2),
+                vt100::MouseProtocolMode::None,
+                vt100::MouseProtocolEncoding::Sgr,
+                false,
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn encodes_sgr_mouse_wheel_click_and_motion() {
+        let mut scroll = mouse_event(MouseEventKind::ScrollUp, 4, 2);
+        scroll.modifiers = KeyModifiers::CONTROL;
+        assert_eq!(
+            encode_mouse(
+                scroll,
+                vt100::MouseProtocolMode::PressRelease,
+                vt100::MouseProtocolEncoding::Sgr,
+                false,
+            ),
+            b"\x1b[<80;5;3M"
+        );
+        assert_eq!(
+            encode_mouse(
+                mouse_event(MouseEventKind::Up(MouseButton::Right), 0, 0),
+                vt100::MouseProtocolMode::PressRelease,
+                vt100::MouseProtocolEncoding::Sgr,
+                false,
+            ),
+            b"\x1b[<2;1;1m"
+        );
+        assert_eq!(
+            encode_mouse(
+                mouse_event(MouseEventKind::Moved, 9, 7),
+                vt100::MouseProtocolMode::AnyMotion,
+                vt100::MouseProtocolEncoding::Sgr,
+                false,
+            ),
+            b"\x1b[<35;10;8M"
+        );
+    }
+
+    #[test]
+    fn encodes_legacy_and_utf8_mouse_coordinates() {
+        assert_eq!(
+            encode_mouse(
+                mouse_event(MouseEventKind::ScrollDown, 0, 0),
+                vt100::MouseProtocolMode::Press,
+                vt100::MouseProtocolEncoding::Default,
+                false,
+            ),
+            b"\x1b[Ma!!"
+        );
+        assert!(
+            encode_mouse(
+                mouse_event(MouseEventKind::ScrollDown, 223, 0),
+                vt100::MouseProtocolMode::Press,
+                vt100::MouseProtocolEncoding::Default,
+                false,
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            encode_mouse(
+                mouse_event(MouseEventKind::Down(MouseButton::Left), 100, 0),
+                vt100::MouseProtocolMode::Press,
+                vt100::MouseProtocolEncoding::Utf8,
+                false,
+            ),
+            b"\x1b[M \xc2\x85!"
+        );
+    }
+
+    #[test]
+    fn filters_mouse_motion_using_the_requested_mode() {
+        let drag = mouse_event(MouseEventKind::Drag(MouseButton::Left), 1, 1);
+        assert!(
+            encode_mouse(
+                drag,
+                vt100::MouseProtocolMode::PressRelease,
+                vt100::MouseProtocolEncoding::Sgr,
+                false,
+            )
+            .is_empty()
+        );
+        assert!(
+            !encode_mouse(
+                drag,
+                vt100::MouseProtocolMode::ButtonMotion,
+                vt100::MouseProtocolEncoding::Sgr,
+                false,
+            )
+            .is_empty()
         );
     }
 
