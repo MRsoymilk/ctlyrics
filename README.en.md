@@ -31,7 +31,7 @@ web mode:
 - Match lyrics by music path or by title and artist
 - Adjust lyric timing with the arrow keys
 - Redraw automatically when the terminal is resized
-- Preserve the terminal session after exit without using the alternate screen
+- Isolate TUI content in the alternate screen and restore the terminal session on exit
 - Manage lyric mappings through the built-in web interface
 - Upload one or more `.lrc` files by drag and drop
 - Reload mapping changes in the terminal automatically

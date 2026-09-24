@@ -1,14 +1,14 @@
 use anyhow::Result;
 use clap::{Arg, ArgAction, Command};
 use crossterm::{
-    cursor::{MoveTo, Show},
+    cursor::Show,
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
         KeyModifiers,
     },
     execute,
     style::Print,
-    terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::Terminal;
 use std::io::{self, Write};
@@ -150,8 +150,7 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
     let mut stdout = io::stdout();
     execute!(
         stdout,
-        Clear(ClearType::All),
-        MoveTo(0, 0),
+        EnterAlternateScreen,
         EnableMouseCapture,
         // Crossterm also enables all-motion tracking, which floods the event queue.
         Print("\x1b[?1003l")
@@ -360,18 +359,8 @@ struct TerminalGuard;
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let row = crossterm::terminal::size()
-            .map(|(_, height)| height.saturating_sub(1))
-            .unwrap_or(0);
         let mut stdout = io::stdout();
-        let _ = execute!(
-            stdout,
-            DisableMouseCapture,
-            Show,
-            MoveTo(0, row),
-            Clear(ClearType::CurrentLine),
-            Print("\r\n")
-        );
+        let _ = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen, Show);
         let _ = stdout.flush();
     }
 }
