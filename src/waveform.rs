@@ -1,22 +1,32 @@
 use anyhow::{Context, Result, anyhow};
 use std::f32::consts::PI;
-use std::io::Read;
-use std::process::{Child, Command, Stdio};
+use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, RwLock,
-    atomic::{AtomicBool, AtomicU32, Ordering},
+    atomic::{AtomicBool, Ordering},
 };
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-const SAMPLE_RATE: usize = 48_000;
+use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
+use symphonia::core::errors::Error as SymphoniaError;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
+use symphonia::core::units::{Time, TimeBase};
+use symphonia::default::{get_codecs, get_probe};
+
 const FRAME_SIZE: usize = 2_048;
 const BAND_COUNT: usize = 64;
 const MIN_FREQUENCY: f32 = 45.0;
 const MAX_FREQUENCY: f32 = 16_000.0;
 const DB_FLOOR: f32 = -72.0;
 const DB_CEILING: f32 = -6.0;
-const RETRY_DELAY: Duration = Duration::from_secs(1);
+const IDLE_POLL: Duration = Duration::from_millis(50);
+const ERROR_RETRY: Duration = Duration::from_secs(1);
+const RESYNC_THRESHOLD_SECONDS: f64 = 0.45;
 
 #[derive(Debug, Clone, Default)]
 pub enum SpectrumSnapshot {
@@ -32,70 +42,85 @@ pub enum SpectrumSnapshot {
     },
 }
 
+#[derive(Debug, Clone)]
+struct PlaybackState {
+    active: bool,
+    file: PathBuf,
+    position: u64,
+    status: String,
+    anchor: Instant,
+}
+
+impl Default for PlaybackState {
+    fn default() -> Self {
+        Self {
+            active: false,
+            file: PathBuf::new(),
+            position: 0,
+            status: "stopped".to_string(),
+            anchor: Instant::now(),
+        }
+    }
+}
+
+impl PlaybackState {
+    fn target_seconds(&self) -> f64 {
+        let elapsed = if self.status == "playing" {
+            self.anchor.elapsed().as_secs_f64()
+        } else {
+            0.0
+        };
+        self.position as f64 + elapsed
+    }
+}
+
 pub struct SpectrumService {
-    active: Arc<AtomicBool>,
+    playback: Arc<RwLock<PlaybackState>>,
     stop: Arc<AtomicBool>,
-    child_pid: Arc<AtomicU32>,
     snapshot: Arc<RwLock<SpectrumSnapshot>>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl SpectrumService {
     pub fn new() -> Self {
-        let active = Arc::new(AtomicBool::new(false));
+        let playback = Arc::new(RwLock::new(PlaybackState::default()));
         let stop = Arc::new(AtomicBool::new(false));
-        let child_pid = Arc::new(AtomicU32::new(0));
         let snapshot = Arc::new(RwLock::new(SpectrumSnapshot::Idle));
 
-        let worker_active = Arc::clone(&active);
+        let worker_playback = Arc::clone(&playback);
         let worker_stop = Arc::clone(&stop);
-        let worker_pid = Arc::clone(&child_pid);
         let worker_snapshot = Arc::clone(&snapshot);
         let worker = thread::spawn(move || {
-            while !worker_stop.load(Ordering::Relaxed) {
-                if !worker_active.load(Ordering::Relaxed) {
-                    thread::sleep(Duration::from_millis(50));
-                    continue;
-                }
-
-                set_snapshot(&worker_snapshot, SpectrumSnapshot::Starting);
-                match capture_spectrum(&worker_active, &worker_stop, &worker_pid, &worker_snapshot)
-                {
-                    Ok(()) => {
-                        if !worker_active.load(Ordering::Relaxed) {
-                            set_snapshot(&worker_snapshot, SpectrumSnapshot::Idle);
-                        }
-                    }
-                    Err(error) => {
-                        if worker_active.load(Ordering::Relaxed)
-                            && !worker_stop.load(Ordering::Relaxed)
-                        {
-                            set_snapshot(
-                                &worker_snapshot,
-                                SpectrumSnapshot::Error {
-                                    message: Arc::from(error.to_string()),
-                                },
-                            );
-                            sleep_interruptibly(&worker_active, &worker_stop, RETRY_DELAY);
-                        }
-                    }
-                }
-            }
+            run_worker(&worker_playback, &worker_stop, &worker_snapshot);
         });
 
         Self {
-            active,
+            playback,
             stop,
-            child_pid,
             snapshot,
             worker: Some(worker),
         }
     }
 
-    pub fn set_active(&self, active: bool) {
-        let changed = self.active.swap(active, Ordering::Relaxed) != active;
-        if changed && !active {
-            set_snapshot(&self.snapshot, SpectrumSnapshot::Idle);
+    pub fn update(&self, active: bool, file: &str, position: u64, status: &str) {
+        let Ok(mut playback) = self.playback.write() else {
+            return;
+        };
+
+        let file = PathBuf::from(file);
+        let now = Instant::now();
+        let state_changed = playback.active != active
+            || playback.file != file
+            || playback.status != status
+            || playback.position != position;
+
+        if state_changed {
+            playback.active = active;
+            playback.file = file;
+            playback.position = position;
+            playback.status.clear();
+            playback.status.push_str(status);
+            playback.anchor = now;
         }
     }
 
@@ -116,131 +141,302 @@ impl Default for SpectrumService {
 impl Drop for SpectrumService {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        self.active.store(false, Ordering::Relaxed);
-        terminate_capture(self.child_pid.load(Ordering::Relaxed));
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
     }
 }
 
-fn capture_spectrum(
-    active: &AtomicBool,
-    stop: &AtomicBool,
-    child_pid: &AtomicU32,
-    snapshot: &RwLock<SpectrumSnapshot>,
-) -> Result<()> {
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (active, stop, child_pid, snapshot);
-        return Err(anyhow!(
-            "real-time spectrum capture currently requires PipeWire on Linux"
-        ));
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let mut child = spawn_pipewire_capture()?;
-        child_pid.store(child.id(), Ordering::Relaxed);
-        let result = read_spectrum_stream(&mut child, active, stop, snapshot);
-        let _ = child.kill();
-        let _ = child.wait();
-        child_pid.store(0, Ordering::Relaxed);
-        result
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn spawn_pipewire_capture() -> Result<Child> {
-    Command::new("pw-cat")
-        .args([
-            "--record",
-            "--raw",
-            "--rate",
-            "48000",
-            "--channels",
-            "1",
-            "--channel-map",
-            "mono",
-            "--format",
-            "f32",
-            "--latency",
-            "20ms",
-            "--properties",
-            r#"{"stream.capture.sink":true,"node.name":"ctlyrics-spectrum","media.role":"Music"}"#,
-            "-",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(
-            || "failed to start pw-cat; install PipeWire tools to enable the real-time spectrum",
-        )
-}
-
-#[cfg(target_os = "linux")]
-fn read_spectrum_stream(
-    child: &mut Child,
-    active: &AtomicBool,
+fn run_worker(
+    playback: &RwLock<PlaybackState>,
     stop: &AtomicBool,
     snapshot: &RwLock<SpectrumSnapshot>,
-) -> Result<()> {
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("pw-cat stdout is unavailable"))?;
-    let mut analyzer = SpectrumAnalyzer::new();
-    let mut samples = Vec::<f32>::with_capacity(FRAME_SIZE * 2);
-    let mut pending_bytes = Vec::<u8>::new();
-    let mut buffer = [0u8; 16 * 1024];
+) {
+    let mut source: Option<AudioSource> = None;
+    let mut analyzer: Option<SpectrumAnalyzer> = None;
+    let mut last_error_file = PathBuf::new();
 
-    while active.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) {
-        let count = stdout.read(&mut buffer)?;
-        if count == 0 {
-            let status = child
-                .try_wait()?
-                .or_else(|| child.wait().ok())
-                .ok_or_else(|| anyhow!("pw-cat stopped producing audio"))?;
-            let mut error = String::new();
-            if let Some(stderr) = child.stderr.as_mut() {
-                let _ = stderr.read_to_string(&mut error);
-            }
-            let error = error.trim();
-            return Err(if error.is_empty() {
-                anyhow!("pw-cat exited with status {status}")
-            } else {
-                anyhow!("pw-cat exited with status {status}: {error}")
-            });
+    while !stop.load(Ordering::Relaxed) {
+        let state = playback
+            .read()
+            .map(|state| state.clone())
+            .unwrap_or_default();
+
+        if !state.active {
+            source = None;
+            analyzer = None;
+            set_snapshot(snapshot, SpectrumSnapshot::Idle);
+            thread::sleep(IDLE_POLL);
+            continue;
         }
 
-        pending_bytes.extend_from_slice(&buffer[..count]);
-        let complete = pending_bytes.len() / 4 * 4;
-        for bytes in pending_bytes[..complete].chunks_exact(4) {
-            let sample = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-            if sample.is_finite() {
-                samples.push(sample.clamp(-1.0, 1.0));
-            }
+        if state.file.as_os_str().is_empty() || state.status == "stopped" {
+            source = None;
+            decay_snapshot(snapshot, analyzer.as_mut());
+            thread::sleep(Duration::from_millis(40));
+            continue;
+        }
 
-            while samples.len() >= FRAME_SIZE {
-                let frame = &samples[..FRAME_SIZE];
-                let (levels, peaks) = analyzer.analyze(frame);
+        if state.status != "playing" {
+            decay_snapshot(snapshot, analyzer.as_mut());
+            thread::sleep(Duration::from_millis(40));
+            continue;
+        }
+
+        let target = state.target_seconds();
+        let source_needs_open = source
+            .as_ref()
+            .is_none_or(|source| source.path != state.file);
+
+        if source_needs_open {
+            set_snapshot(snapshot, SpectrumSnapshot::Starting);
+            match AudioSource::open(&state.file, target) {
+                Ok(opened) => {
+                    analyzer = Some(SpectrumAnalyzer::new(opened.sample_rate as usize));
+                    source = Some(opened);
+                    last_error_file.clear();
+                }
+                Err(error) => {
+                    if last_error_file != state.file {
+                        tracing::warn!(path = %state.file.display(), %error, "spectrum decoder unavailable");
+                        last_error_file = state.file.clone();
+                    }
+                    set_snapshot(
+                        snapshot,
+                        SpectrumSnapshot::Error {
+                            message: Arc::from(error.to_string()),
+                        },
+                    );
+                    sleep_interruptibly(stop, ERROR_RETRY);
+                    continue;
+                }
+            }
+        }
+
+        let Some(source_ref) = source.as_mut() else {
+            continue;
+        };
+
+        if (source_ref.position_seconds - target).abs() > RESYNC_THRESHOLD_SECONDS
+            && let Err(error) = source_ref.seek(target)
+        {
+            set_snapshot(
+                snapshot,
+                SpectrumSnapshot::Error {
+                    message: Arc::from(error.to_string()),
+                },
+            );
+            source = None;
+            sleep_interruptibly(stop, ERROR_RETRY);
+            continue;
+        }
+
+        let started = Instant::now();
+        match source_ref.read_frame(FRAME_SIZE) {
+            Ok(Some(frame)) => {
+                if analyzer
+                    .as_ref()
+                    .is_none_or(|analyzer| analyzer.sample_rate != frame.sample_rate as usize)
+                {
+                    analyzer = Some(SpectrumAnalyzer::new(frame.sample_rate as usize));
+                }
+                if let Some(analyzer) = analyzer.as_mut() {
+                    let (levels, peaks) = analyzer.analyze(&frame.samples);
+                    set_snapshot(
+                        snapshot,
+                        SpectrumSnapshot::Ready {
+                            levels: Arc::from(levels.into_boxed_slice()),
+                            peaks: Arc::from(peaks.into_boxed_slice()),
+                        },
+                    );
+                }
+
+                let frame_time =
+                    Duration::from_secs_f64(frame.samples.len() as f64 / frame.sample_rate as f64);
+                if let Some(remaining) = frame_time.checked_sub(started.elapsed()) {
+                    sleep_interruptibly(stop, remaining);
+                }
+            }
+            Ok(None) => {
+                source = None;
+                decay_snapshot(snapshot, analyzer.as_mut());
+                thread::sleep(Duration::from_millis(40));
+            }
+            Err(error) => {
                 set_snapshot(
                     snapshot,
-                    SpectrumSnapshot::Ready {
-                        levels: Arc::from(levels.into_boxed_slice()),
-                        peaks: Arc::from(peaks.into_boxed_slice()),
+                    SpectrumSnapshot::Error {
+                        message: Arc::from(error.to_string()),
                     },
                 );
-                samples.drain(..FRAME_SIZE);
+                source = None;
+                sleep_interruptibly(stop, ERROR_RETRY);
             }
         }
-        pending_bytes.drain(..complete);
+    }
+}
+
+struct AudioFrame {
+    samples: Vec<f32>,
+    sample_rate: u32,
+}
+
+struct AudioSource {
+    path: PathBuf,
+    format: Box<dyn FormatReader>,
+    decoder: Box<dyn AudioDecoder>,
+    track_id: u32,
+    sample_rate: u32,
+    time_base: Option<TimeBase>,
+    pending: Vec<f32>,
+    interleaved: Vec<f32>,
+    position_seconds: f64,
+}
+
+impl AudioSource {
+    fn open(path: &Path, position_seconds: f64) -> Result<Self> {
+        let file = File::open(path)
+            .with_context(|| format!("failed to open audio file {}", path.display()))?;
+        let media_source = MediaSourceStream::new(Box::new(file), Default::default());
+        let mut hint = Hint::new();
+        if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
+            hint.with_extension(extension);
+        }
+
+        let format = get_probe()
+            .probe(
+                &hint,
+                media_source,
+                FormatOptions::default(),
+                MetadataOptions::default(),
+            )
+            .map_err(|error| anyhow!("unsupported audio format: {error}"))?;
+
+        let track = format
+            .default_track(TrackType::Audio)
+            .ok_or_else(|| anyhow!("audio file contains no decodable audio track"))?;
+        let track_id = track.id;
+        let params = track
+            .codec_params
+            .as_ref()
+            .and_then(|params| params.audio())
+            .ok_or_else(|| anyhow!("audio codec parameters are unavailable"))?
+            .clone();
+        let sample_rate = params
+            .sample_rate
+            .ok_or_else(|| anyhow!("audio sample rate is unavailable"))?;
+        let time_base = track.time_base;
+        let decoder = get_codecs()
+            .make_audio_decoder(&params, &AudioDecoderOptions::default())
+            .map_err(|error| anyhow!("unsupported audio codec: {error}"))?;
+
+        let mut source = Self {
+            path: path.to_path_buf(),
+            format,
+            decoder,
+            track_id,
+            sample_rate,
+            time_base,
+            pending: Vec::with_capacity(FRAME_SIZE * 4),
+            interleaved: Vec::new(),
+            position_seconds: 0.0,
+        };
+        source.seek(position_seconds)?;
+        Ok(source)
     }
 
-    Ok(())
+    fn seek(&mut self, position_seconds: f64) -> Result<()> {
+        let target = position_seconds.max(0.0);
+        let time = Time::try_from_secs_f64(target)
+            .ok_or_else(|| anyhow!("invalid seek position: {target:.3}s"))?;
+        let seeked = self
+            .format
+            .seek(
+                SeekMode::Accurate,
+                SeekTo::Time {
+                    time,
+                    track_id: Some(self.track_id),
+                },
+            )
+            .map_err(|error| anyhow!("audio seek failed: {error}"))?;
+        self.decoder.reset();
+        self.pending.clear();
+        self.position_seconds = self
+            .time_base
+            .and_then(|time_base| time_base.calc_time(seeked.actual_ts))
+            .map(|time| time.as_secs_f64())
+            .unwrap_or(target);
+        Ok(())
+    }
+
+    fn read_frame(&mut self, frame_size: usize) -> Result<Option<AudioFrame>> {
+        while self.pending.len() < frame_size {
+            let packet = match self.format.next_packet() {
+                Ok(Some(packet)) => packet,
+                Ok(None) => break,
+                Err(SymphoniaError::ResetRequired) => {
+                    return Err(anyhow!("audio stream changed while decoding"));
+                }
+                Err(SymphoniaError::IoError(error))
+                    if error.kind() == std::io::ErrorKind::UnexpectedEof =>
+                {
+                    break;
+                }
+                Err(error) => return Err(anyhow!("failed to read audio packet: {error}")),
+            };
+
+            if packet.track_id != self.track_id {
+                continue;
+            }
+
+            let decoded = match self.decoder.decode(&packet) {
+                Ok(decoded) => decoded,
+                Err(SymphoniaError::DecodeError(_)) => continue,
+                Err(SymphoniaError::IoError(error))
+                    if error.kind() == std::io::ErrorKind::UnexpectedEof =>
+                {
+                    break;
+                }
+                Err(error) => return Err(anyhow!("failed to decode audio packet: {error}")),
+            };
+
+            self.sample_rate = decoded.spec().rate();
+            let channels = decoded.spec().channels().count().max(1);
+            self.interleaved.resize(decoded.samples_interleaved(), 0.0);
+            decoded.copy_to_slice_interleaved(&mut self.interleaved);
+
+            for frame in self.interleaved.chunks(channels) {
+                let mono = frame.iter().copied().sum::<f32>() / channels as f32;
+                self.pending.push(mono.clamp(-1.0, 1.0));
+            }
+        }
+
+        if self.pending.is_empty() {
+            return Ok(None);
+        }
+
+        let take = frame_size.min(self.pending.len());
+        let samples = self.pending.drain(..take).collect::<Vec<_>>();
+        self.position_seconds += samples.len() as f64 / self.sample_rate as f64;
+
+        if samples.len() < frame_size {
+            let mut padded = samples;
+            padded.resize(frame_size, 0.0);
+            return Ok(Some(AudioFrame {
+                samples: padded,
+                sample_rate: self.sample_rate,
+            }));
+        }
+
+        Ok(Some(AudioFrame {
+            samples,
+            sample_rate: self.sample_rate,
+        }))
+    }
 }
 
 struct SpectrumAnalyzer {
+    sample_rate: usize,
     window: Vec<f32>,
     coefficients: Vec<f32>,
     levels: Vec<f32>,
@@ -248,22 +444,23 @@ struct SpectrumAnalyzer {
 }
 
 impl SpectrumAnalyzer {
-    fn new() -> Self {
+    fn new(sample_rate: usize) -> Self {
+        let sample_rate = sample_rate.max(1);
         let window = (0..FRAME_SIZE)
             .map(|index| 0.5 - 0.5 * (2.0 * PI * index as f32 / (FRAME_SIZE - 1) as f32).cos())
             .collect::<Vec<_>>();
-
-        let frequencies = (0..BAND_COUNT).map(band_frequency).collect::<Vec<_>>();
-
-        let coefficients = frequencies
-            .iter()
-            .map(|frequency| {
-                let omega = 2.0 * PI * *frequency / SAMPLE_RATE as f32;
+        let nyquist = sample_rate as f32 * 0.5;
+        let max_frequency = MAX_FREQUENCY.min(nyquist * 0.92).max(MIN_FREQUENCY);
+        let coefficients = (0..BAND_COUNT)
+            .map(|index| {
+                let frequency = band_frequency(index, max_frequency);
+                let omega = 2.0 * PI * frequency / sample_rate as f32;
                 2.0 * omega.cos()
             })
             .collect::<Vec<_>>();
 
         Self {
+            sample_rate,
             window,
             coefficients,
             levels: vec![0.0; BAND_COUNT],
@@ -278,12 +475,7 @@ impl SpectrumAnalyzer {
             / samples.len() as f32)
             .sqrt();
         if rms < 0.00008 {
-            for level in &mut self.levels {
-                *level *= 0.72;
-            }
-            for peak in &mut self.peaks {
-                *peak = (*peak - 0.035).max(0.0);
-            }
+            self.decay();
             return (self.levels.clone(), self.peaks.clone());
         }
 
@@ -320,11 +512,40 @@ impl SpectrumAnalyzer {
 
         (self.levels.clone(), self.peaks.clone())
     }
+
+    fn decay(&mut self) {
+        for level in &mut self.levels {
+            *level *= 0.72;
+        }
+        for peak in &mut self.peaks {
+            *peak = (*peak - 0.035).max(0.0);
+        }
+    }
+
+    fn current(&self) -> (Vec<f32>, Vec<f32>) {
+        (self.levels.clone(), self.peaks.clone())
+    }
 }
 
-fn band_frequency(index: usize) -> f32 {
+fn decay_snapshot(snapshot: &RwLock<SpectrumSnapshot>, analyzer: Option<&mut SpectrumAnalyzer>) {
+    if let Some(analyzer) = analyzer {
+        analyzer.decay();
+        let (levels, peaks) = analyzer.current();
+        set_snapshot(
+            snapshot,
+            SpectrumSnapshot::Ready {
+                levels: Arc::from(levels.into_boxed_slice()),
+                peaks: Arc::from(peaks.into_boxed_slice()),
+            },
+        );
+    } else {
+        set_snapshot(snapshot, SpectrumSnapshot::Idle);
+    }
+}
+
+fn band_frequency(index: usize, max_frequency: f32) -> f32 {
     let position = index as f32 / (BAND_COUNT - 1) as f32;
-    MIN_FREQUENCY * (MAX_FREQUENCY / MIN_FREQUENCY).powf(position)
+    MIN_FREQUENCY * (max_frequency / MIN_FREQUENCY).powf(position)
 }
 
 fn set_snapshot(snapshot: &RwLock<SpectrumSnapshot>, next: SpectrumSnapshot) {
@@ -333,26 +554,12 @@ fn set_snapshot(snapshot: &RwLock<SpectrumSnapshot>, next: SpectrumSnapshot) {
     }
 }
 
-fn sleep_interruptibly(active: &AtomicBool, stop: &AtomicBool, duration: Duration) {
-    let steps = (duration.as_millis() / 50).max(1);
-    for _ in 0..steps {
-        if !active.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed) {
-            break;
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-}
-
-fn terminate_capture(pid: u32) {
-    if pid == 0 {
-        return;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        use nix::sys::signal::{Signal, kill};
-        use nix::unistd::Pid;
-        let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+fn sleep_interruptibly(stop: &AtomicBool, duration: Duration) {
+    let deadline = Instant::now() + duration;
+    while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
+        thread::sleep(
+            Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now())),
+        );
     }
 }
 
@@ -362,10 +569,10 @@ mod tests {
 
     #[test]
     fn detects_one_kilohertz_tone() {
-        let mut analyzer = SpectrumAnalyzer::new();
+        let mut analyzer = SpectrumAnalyzer::new(48_000);
         let samples = (0..FRAME_SIZE)
             .map(|index| {
-                let time = index as f32 / SAMPLE_RATE as f32;
+                let time = index as f32 / 48_000.0;
                 (2.0 * PI * 1_000.0 * time).sin() * 0.7
             })
             .collect::<Vec<_>>();
@@ -377,13 +584,13 @@ mod tests {
             .max_by(|(_, left), (_, right)| left.total_cmp(right))
             .map(|(index, _)| index)
             .unwrap();
-        let frequency = band_frequency(strongest);
+        let frequency = band_frequency(strongest, MAX_FREQUENCY);
         assert!((700.0..=1_350.0).contains(&frequency));
     }
 
     #[test]
     fn silence_decays_levels_and_peaks() {
-        let mut analyzer = SpectrumAnalyzer::new();
+        let mut analyzer = SpectrumAnalyzer::new(44_100);
         analyzer.levels.fill(0.8);
         analyzer.peaks.fill(0.9);
 
@@ -394,8 +601,20 @@ mod tests {
 
     #[test]
     fn frequencies_are_log_spaced_and_bounded() {
-        assert!((band_frequency(0) - MIN_FREQUENCY).abs() < 0.1);
-        assert!((band_frequency(BAND_COUNT - 1) - MAX_FREQUENCY).abs() < 1.0);
-        assert!(band_frequency(1) / band_frequency(0) > 1.0);
+        assert!((band_frequency(0, MAX_FREQUENCY) - MIN_FREQUENCY).abs() < 0.1);
+        assert!((band_frequency(BAND_COUNT - 1, MAX_FREQUENCY) - MAX_FREQUENCY).abs() < 1.0);
+        assert!(band_frequency(1, MAX_FREQUENCY) / band_frequency(0, MAX_FREQUENCY) > 1.0);
+    }
+
+    #[test]
+    fn playback_target_advances_while_playing() {
+        let state = PlaybackState {
+            active: true,
+            file: PathBuf::from("song.flac"),
+            position: 10,
+            status: "playing".to_string(),
+            anchor: Instant::now() - Duration::from_millis(250),
+        };
+        assert!((10.20..10.40).contains(&state.target_seconds()));
     }
 }

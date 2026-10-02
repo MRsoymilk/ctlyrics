@@ -24,7 +24,7 @@
   "cmus_resize_failed": "无法调整 cmus 界面大小：{error}",
   "cmus_external_running": "cmus 已在其他终端运行，无法附加其界面",
   "cmus_exited": "cmus 已退出；按 Ctrl+W 可重新启动",
-  "spectrum_starting": "正在启动实时频谱...",
+  "spectrum_starting": "正在解码当前歌曲频谱...",
   "spectrum_error": "实时频谱不可用：{error}",
   "spectrum_live": "实时频谱",
   "browser_open_failed": "无法打开浏览器：{error}",

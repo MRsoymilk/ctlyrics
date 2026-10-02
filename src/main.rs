@@ -212,7 +212,12 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
             player.show_message(tr(locale, "cmus_exited").to_string());
         }
         let info = cmus_info.latest();
-        spectrum_service.set_active(active_view == ActiveView::Spectrum);
+        spectrum_service.update(
+            active_view == ActiveView::Spectrum,
+            &info.file,
+            info.position,
+            &info.status,
+        );
         let spectrum_snapshot = spectrum_service.snapshot();
         let lyrics = lyrics_cache.load_lyrics(&info.title, Some(&info.artist), Some(&info.file));
         let lyric = current_lyric_line(&lyrics, info.position as f64 + player.lyric_offset())

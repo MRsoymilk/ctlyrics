@@ -5,11 +5,11 @@ Priority: optional
 Architecture: amd64
 Maintainer: MRsoymilk <codermrsoymilk@gmail.com>
 Installed-Size: @INSTALLED_SIZE@
-Depends: cmus, fontconfig, libc6, libgcc-s1, pipewire-bin, python3, xdg-utils
+Depends: cmus, fontconfig, libc6, libgcc-s1, python3, xdg-utils
 Homepage: https://github.com/MRsoymilk/ctlyrics
 Description: terminal lyrics viewer and mapping manager for cmus
  ctlyrics starts cmus in an embedded terminal when needed and displays
  synchronized LRC lyrics for the current track. It includes full-screen cmus,
- lyrics, and real-time PipeWire spectrum interfaces, a Web mapping manager, desktop tray integration,
+ lyrics, and an in-process real-time spectrum interface, a Web mapping manager, desktop tray integration,
  Wayland and X11 lyric bubbles, and helper tools for downloading and mapping
  lyrics.

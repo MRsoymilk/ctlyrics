@@ -24,7 +24,7 @@
   "cmus_resize_failed": "Failed to resize cmus: {error}",
   "cmus_external_running": "cmus is already running in another terminal and cannot be attached",
   "cmus_exited": "cmus exited; press Ctrl+W to start it again",
-  "spectrum_starting": "Starting real-time spectrum...",
+  "spectrum_starting": "Decoding current track spectrum...",
   "spectrum_error": "Real-time spectrum unavailable: {error}",
   "spectrum_live": "LIVE SPECTRUM",
   "browser_open_failed": "Failed to open browser: {error}",
