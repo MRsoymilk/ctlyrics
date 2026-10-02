@@ -14,7 +14,9 @@ the native Rust target. Generated files are stored in `package/build/` and
 `package/dist/`.
 
 The AppImage uses the host installation of `cmus`, `cmus-remote`, and
-`python3`. The bundled Python tools can be invoked through the AppImage:
+`python3`. Spectrum decoding is compiled into the Rust binary through Symphonia,
+so it does not require `pw-cat`, `ffmpeg`, or PipeWire at runtime. The bundled
+Python tools can be invoked through the AppImage:
 
 ```bash
 ./package/dist/ctlyrics-0.2.0-x86_64.AppImage tools get-songs --help

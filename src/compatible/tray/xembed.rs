@@ -587,11 +587,6 @@ fn run_tray(
                     }
                 }
                 Event::ButtonPress(event) if event.event == icon && event.detail == 3 => {
-                    if bubble_visible {
-                        hide_bubble(&connection, bubble)?;
-                        bubble_visible = false;
-                        bubble_drag = None;
-                    }
                     menu_opened_at = Instant::now();
                     draw_menu(
                         &connection,
@@ -777,8 +772,7 @@ fn draw_lyric_bubble(
             .x(x)
             .y(y)
             .width(u32::from(width))
-            .height(u32::from(height))
-            .stack_mode(StackMode::ABOVE),
+            .height(u32::from(height)),
     )?;
     let image = native_x11_pixels(&rgba, width, height, format)?;
     connection.put_image(

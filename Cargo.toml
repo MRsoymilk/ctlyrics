@@ -1,6 +1,6 @@
 [package]
 name = "ctlyrics"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["MRsoymilk <codermrsoymilk@gmail.com>"]
 description = "A terminal lyrics viewer and mapping manager for cmus"
 license = "MIT"
@@ -26,6 +26,7 @@ clap = { version = "4", features = ["derive", "string"] }
 dirs = "6"
 walkdir = "2"
 unicode-width = "0.2"
+symphonia = { version = "0.6.1", default-features = false, features = ["aac", "alac", "flac", "id3v1", "id3v2", "isomp4", "mp3", "ogg", "pcm", "vorbis", "wav"] }
 
 # Web server
 axum = { version = "0.8", features = ["multipart"] }
