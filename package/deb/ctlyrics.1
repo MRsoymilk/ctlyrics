@@ -12,8 +12,9 @@ ctlyrics \- terminal lyrics viewer and mapping manager for cmus
 .B ctlyrics
 starts cmus in an embedded pseudoterminal when needed, reads its playback
 information, and displays synchronized LRC lyrics. Press Ctrl+W to cycle
-through the lyrics, Waveform, and full-screen cmus views. The Waveform view
-uses the host ffmpeg executable to decode the current track in the background.
+through the lyrics, Spectrum, and full-screen cmus views. The Spectrum view
+uses PipeWire pw-cat to capture the default output monitor and render a live
+45Hz to 16kHz spectrum.
 The embedded cmus process exits together with ctlyrics. The program also
 provides desktop tray integration and a local Web interface for managing lyric
 mappings.
@@ -38,13 +39,13 @@ Port to listen on. The default is 3000.
 .SH KEYBOARD
 .TP
 .B Ctrl+W
-Cycle through the lyrics, Waveform, and embedded cmus views.
+Cycle through the lyrics, Spectrum, and embedded cmus views.
 .TP
 .B Ctrl+C
 Quit safely and restore the terminal state from either interface.
 .TP
 .B q
-Quit ctlyrics from the lyrics or Waveform view. In the cmus interface, keys
+Quit ctlyrics from the lyrics or Spectrum view. In the cmus interface, keys
 other than the global Ctrl+W and Ctrl+C shortcuts are passed to cmus.
 .SH MOUSE
 Mouse input in the embedded cmus interface is forwarded when the cmus
@@ -79,4 +80,4 @@ Application logs.
 .SH SEE ALSO
 .BR cmus (1),
 .BR cmus-remote (1),
-.BR ffmpeg (1)
+.BR pw-cat (1)
