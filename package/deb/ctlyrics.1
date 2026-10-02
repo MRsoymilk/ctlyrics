@@ -13,8 +13,8 @@ ctlyrics \- terminal lyrics viewer and mapping manager for cmus
 starts cmus in an embedded pseudoterminal when needed, reads its playback
 information, and displays synchronized LRC lyrics. Press Ctrl+W to cycle
 through the lyrics, Spectrum, and full-screen cmus views. The Spectrum view
-uses PipeWire pw-cat to capture the default output monitor and render a live
-45Hz to 16kHz spectrum.
+uses the built-in Symphonia decoder to follow the current cmus track and render
+a live 45Hz to 16kHz spectrum without an external audio capture command.
 The embedded cmus process exits together with ctlyrics. The program also
 provides desktop tray integration and a local Web interface for managing lyric
 mappings.
@@ -79,5 +79,4 @@ LRC lyric files.
 Application logs.
 .SH SEE ALSO
 .BR cmus (1),
-.BR cmus-remote (1),
-.BR pw-cat (1)
+.BR cmus-remote (1)

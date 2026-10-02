@@ -13,10 +13,10 @@ then builds explicitly with `cargo +stable`. Otherwise, the build script uses
 the native Rust target. Generated files are stored in `package/build/` and
 `package/dist/`.
 
-The AppImage uses the host installation of `cmus`, `cmus-remote`, PipeWire
-`pw-cat`, and `python3`. `pw-cat` is used only while the Spectrum view captures
-the default output-device monitor for real-time analysis. The bundled Python
-tools can be invoked through the AppImage:
+The AppImage uses the host installation of `cmus`, `cmus-remote`, and
+`python3`. Spectrum decoding is compiled into the Rust binary through Symphonia,
+so it does not require `pw-cat`, `ffmpeg`, or PipeWire at runtime. The bundled
+Python tools can be invoked through the AppImage:
 
 ```bash
 ./package/dist/ctlyrics-0.2.0-x86_64.AppImage tools get-songs --help
