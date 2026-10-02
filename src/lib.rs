@@ -8,4 +8,6 @@ pub mod lyrics_cache;
 pub mod mapping;
 pub mod paths;
 pub mod player;
+pub mod waveform;
+pub mod waveform_view;
 pub mod web;
