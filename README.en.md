@@ -22,16 +22,21 @@ web mode:
 
 ![web dark](README/web-dark.jpg)
 
+spectrum mode:
+
+![frequencies](README/frequencies.jpg)
+
 ## Features
 
 - Display synchronized lyrics for the current cmus track in the terminal
+- Show a dedicated Spectrum view that analyzes the current cmus track as a live 45Hz–16kHz logarithmic spectrum with peak hold and media controls
 - On Linux, start cmus in an embedded terminal when it is not already running
-- Switch between the full-screen cmus and lyrics interfaces with `Ctrl+W`
+- Cycle through lyrics, Spectrum, and full-screen cmus views with `Ctrl+W`
 - Prefer cmus `title` and `artist` tags, with fallback parsing from `title-artist.ext`
 - Match lyrics by music path or by title and artist
 - Adjust lyric timing with the arrow keys
 - Redraw automatically when the terminal is resized
-- Preserve the terminal session after exit without using the alternate screen
+- Isolate TUI content in the alternate screen and restore the terminal session on exit
 - Manage lyric mappings through the built-in web interface
 - Upload one or more `.lrc` files by drag and drop
 - Reload mapping changes in the terminal automatically
@@ -46,6 +51,7 @@ web mode:
 - Rust 1.88 or newer (Rust 2024 Edition)
 - cmus installed; ctlyrics starts it automatically when needed
 - A working `cmus-remote -Q` command
+- Spectrum decoding is built in with pure-Rust Symphonia; no `pw-cat`, `ffmpeg`, or PipeWire runtime dependency is required
 - A graphical browser when using `:web`
 
 Check the cmus connection with:
@@ -90,10 +96,11 @@ cargo run
 ```
 
 If cmus is not running, ctlyrics starts it in an embedded pseudoterminal and
-opens the cmus interface first. Press `Ctrl+W` to switch between cmus and the
-lyrics. The embedded cmus process exits together with ctlyrics. An existing
-cmus process in another terminal continues to work for lyrics and playback
-control, but its ncurses interface cannot be attached to ctlyrics.
+opens the cmus interface first. Press `Ctrl+W` to cycle through lyrics,
+Spectrum, and cmus. The embedded cmus process exits together with ctlyrics. An
+existing cmus process in another terminal continues to work for lyrics,
+Spectrum, and playback control, but its ncurses interface cannot be attached;
+in that case the cmus page is skipped while cycling views.
 
 The embedded cmus interface supports mouse clicks and scrolling after running
 `:set mouse=true` in cmus. Run `:save` to keep that setting. ctlyrics forwards
@@ -117,7 +124,7 @@ Artifacts are written to `package/dist/`. The AppImage bundles the three Python 
 ./package/dist/ctlyrics-0.2.0-x86_64.AppImage tools auto-map --help
 ```
 
-The tools invoke the host's `python3` directly without checking whether it is installed. The host must also provide `cmus` and `cmus-remote`. See [`package/README.md`](package/README.md) for packaging details.
+The tools invoke the host's `python3` directly without checking whether it is installed. The host still provides `cmus` and `cmus-remote`; Spectrum audio decoding is compiled into ctlyrics and does not require another audio command-line program. See [`package/README.md`](package/README.md) for packaging details.
 
 On Linux, the tray prefers StatusNotifierItem for KDE Plasma and Waybar, then falls back to XEmbed on X11 desktops such as AwesomeWM. The right-click menu shows the current song, artist, playback status, and progress, with previous, play/pause, next, Start Web, and quit controls. Start Web launches `http://localhost:3000` in the current process and opens it in the default browser. The XEmbed progress bar supports click-to-seek, and long song information scrolls automatically. Left-clicking shows or hides an always-above current-lyric bubble; dragging the bubble moves it and preserves its position for the current run. Scrolling over the tray icon switches between horizontal display and top-to-bottom vertical display with upright glyphs. Scrolling up over the lyric bubble increases its font size, while scrolling down decreases it; the size is constrained to 10 through 48 and is saved for future runs. Wayland prefers a Layer Shell lyric window, falls back to a regular Wayland window, and uses a system notification only if window initialization fails. GNOME Wayland requires an AppIndicator/KStatusNotifier extension. The lyrics interface continues to work when no tray host is available.
 
@@ -135,7 +142,7 @@ Select the interface language:
 |---|---|
 | `q` | Quit |
 | `Ctrl+C` | Quit safely and restore the terminal state |
-| `Ctrl+W` | Switch between the cmus and lyrics interfaces |
+| `Ctrl+W` | Cycle through lyrics, Spectrum, and cmus views |
 | `h` / `?` | Open or close the tree-style help page |
 | `Space` | Play / pause |
 | `n` | Next track |
@@ -150,6 +157,8 @@ Select the interface language:
 The help page presents global controls, help navigation, playback, lyric timing, command mode, commands, and mouse actions as a tree. Scroll line by line with `Up` / `Down` or `j` / `k`, by page with `PageUp` / `PageDown`, jump with `Home` / `End`, or use the mouse wheel. Press `Esc`, `h`, or `?` to return to the lyrics.
 
 The persistent player bar at the bottom shows the title, progress, time, and previous, play/pause, and next icons. All three playback icons support left-click control, and clicking the progress bar seeks directly to the corresponding position. Titles wider than the available area scroll back and forth automatically.
+
+The Spectrum view analyzes audio only while it is visible. A background thread uses the embedded Symphonia decoder to open the current cmus track and stays synchronized with the `cmus-remote -Q` position plus a local monotonic clock; track changes and seeks reposition the decoder automatically, while pause smoothly decays the display. Each analysis frame uses 2048 mono samples and 64 logarithmic bands from 45Hz to 16kHz with fast attack, slower decay, and peak hold. Low frequencies are on the left and highs on the right; bar height is rendered green, yellow, then red near the top. The bottom row keeps playback progress plus previous, play/pause, and next controls. Only the current cmus track is analyzed, so browser and system sounds do not leak into the spectrum. MP3, FLAC, WAV, M4A (AAC/ALAC), and OGG/Vorbis are decoded directly. Monkey's Audio `.ape` is not currently decoded by Symphonia, so Spectrum reports an unsupported format/codec for those tracks.
 
 Command output replaces the player bar for one second before the player returns automatically. While entering a command, the same row becomes the `:` input line.
 
@@ -323,8 +332,11 @@ When the XDG variables are unset, the defaults are `~/.config/ctlyrics`, `~/.loc
 src/
   main.rs          Main entry point and TUI event loop
   i18n.rs          Locale detection, translations, and preferences
-  player.rs        TUI rendering, input, and commands
+  player.rs        Lyrics/player TUI rendering, input, and commands
   cmus.rs          cmus-remote queries and track parsing
+  embedded_cmus.rs Embedded cmus pseudoterminal rendering and input
+  waveform.rs      In-process Symphonia decoding and spectrum analysis
+  waveform_view.rs Real-time Spectrum TUI rendering and controls
   lyrics_cache.rs  Mapping reload, LRC lookup, and parsing
   mapping.rs       Mapping configuration and music scanning
   web.rs           Web routes, uploads, and mapping API

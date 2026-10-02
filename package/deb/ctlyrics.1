@@ -11,10 +11,13 @@ ctlyrics \- terminal lyrics viewer and mapping manager for cmus
 .SH DESCRIPTION
 .B ctlyrics
 starts cmus in an embedded pseudoterminal when needed, reads its playback
-information, and displays synchronized LRC lyrics. Press Ctrl+W to switch
-between the full-screen cmus and lyrics interfaces. The embedded cmus process
-exits together with ctlyrics. The program also provides desktop tray
-integration and a local Web interface for managing lyric mappings.
+information, and displays synchronized LRC lyrics. Press Ctrl+W to cycle
+through the lyrics, Spectrum, and full-screen cmus views. The Spectrum view
+uses the built-in Symphonia decoder to follow the current cmus track and render
+a live 45Hz to 16kHz spectrum without an external audio capture command.
+The embedded cmus process exits together with ctlyrics. The program also
+provides desktop tray integration and a local Web interface for managing lyric
+mappings.
 .SH OPTIONS
 .TP
 .BR -h , " --help"
@@ -36,14 +39,14 @@ Port to listen on. The default is 3000.
 .SH KEYBOARD
 .TP
 .B Ctrl+W
-Switch between the embedded cmus and lyrics interfaces.
+Cycle through the lyrics, Spectrum, and embedded cmus views.
 .TP
 .B Ctrl+C
 Quit safely and restore the terminal state from either interface.
 .TP
 .B q
-Quit ctlyrics from the lyrics interface. In the cmus interface, keys other than
-the global Ctrl+W and Ctrl+C shortcuts are passed to cmus.
+Quit ctlyrics from the lyrics or Spectrum view. In the cmus interface, keys
+other than the global Ctrl+W and Ctrl+C shortcuts are passed to cmus.
 .SH MOUSE
 Mouse input in the embedded cmus interface is forwarded when the cmus
 .B mouse

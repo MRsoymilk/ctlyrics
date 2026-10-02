@@ -24,6 +24,7 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 docker build \
+    --network=host \
     --file "$SCRIPT_DIR/deb/Dockerfile" \
     --target build \
     --tag "$IMAGE" \
