@@ -25,9 +25,9 @@ web 模式：
 ## 功能
 
 - 在终端中同步显示 cmus 当前歌曲歌词
-- 提供独立 Waveform 页面，显示整首歌曲双向波形、播放游标和播放控制
+- 提供独立 Spectrum 页面，实时显示当前系统音乐输出的 45Hz–16kHz 对数频谱、峰值保持和播放控制
 - 在 Linux 上，cmus 未运行时在内嵌终端中自动启动
-- 使用 `Ctrl+W` 在歌词、Waveform 和全屏 cmus 页面之间循环切换
+- 使用 `Ctrl+W` 在歌词、Spectrum 和全屏 cmus 页面之间循环切换
 - 优先读取 cmus 的 `title`、`artist` 标签，并支持从 `歌曲名-歌手.ext` 文件名回退解析
 - 支持按音乐文件路径或标题、歌手匹配歌词
 - 支持使用方向键调整歌词时间偏移
@@ -48,7 +48,7 @@ web 模式：
 - Rust 1.88 或更高版本（项目使用 Rust 2024 Edition）
 - 已安装 `cmus`；需要时 ctlyrics 会自动启动
 - `cmus-remote -Q` 能够正常返回当前歌曲信息
-- 已安装 `ffmpeg`，用于 Waveform 页面后台解码当前歌曲并生成波形
+- Linux 下已安装 PipeWire 工具并可执行 `pw-cat`，用于 Spectrum 页面捕获默认输出设备的实时音频
 - 使用 `:web` 时需要可用的图形浏览器
 
 可以先检查 cmus 状态：
@@ -93,9 +93,9 @@ cargo run
 ```
 
 如果 cmus 尚未运行，ctlyrics 会在内嵌伪终端中启动 cmus，并首先显示
-cmus 界面。按 `Ctrl+W` 会在歌词、Waveform 和 cmus 页面之间循环切换；
+cmus 界面。按 `Ctrl+W` 会在歌词、Spectrum 和 cmus 页面之间循环切换；
 退出 ctlyrics 时，内嵌的 cmus 也会退出。如果 cmus 已在其他终端运行，
-歌词、Waveform 和播放控制仍可正常使用，但其 ncurses 界面无法附加到
+歌词、Spectrum 和播放控制仍可正常使用，但其 ncurses 界面无法附加到
 ctlyrics，此时切换时会跳过 cmus 页面。
 
 内嵌 cmus 支持鼠标点击和滚轮，但需要先在 cmus 中执行 `:set mouse=true`，
@@ -119,7 +119,7 @@ ctlyrics，此时切换时会跳过 cmus 页面。
 ./package/dist/ctlyrics-0.2.0-x86_64.AppImage tools auto-map --help
 ```
 
-Python 工具直接调用宿主系统的 `python3`，不会预先检查是否安装。`cmus`、`cmus-remote` 和 Waveform 使用的 `ffmpeg` 也由宿主系统提供。详细打包说明见 [`package/README.md`](package/README.md)。
+Python 工具直接调用宿主系统的 `python3`，不会预先检查是否安装。`cmus`、`cmus-remote` 和 Spectrum 使用的 `pw-cat` 也由宿主系统提供。详细打包说明见 [`package/README.md`](package/README.md)。
 
 Linux 托盘优先使用 StatusNotifierItem，兼容 KDE Plasma 和启用 `tray` 模块的 Waybar；AwesomeWM 等 X11 环境自动回退到 XEmbed。右键菜单会显示当前歌曲、歌手、播放状态和进度，并提供上一首、播放/暂停、下一首、启动 Web 和关闭控制；“启动 Web”会在当前进程内启动 `http://localhost:3000` 并使用默认浏览器打开。XEmbed 进度条支持点击跳转，歌曲信息超宽时自动滚动。左键可显示或隐藏置于普通窗口之上的当前歌词气泡，拖动气泡可在本次运行内调整并保留位置。在托盘图标上滚动鼠标滚轮可切换横向显示和字形保持正向、从上到下排列的纵向显示；在歌词气泡上向上滚动可放大字体，向下滚动可缩小字体，字号范围为 10 至 48，调整结果会保存。Wayland 优先使用 Layer Shell 歌词窗口，不支持时回退到普通 Wayland 窗口，窗口初始化失败时再使用系统通知。GNOME Wayland 需要安装 AppIndicator/KStatusNotifier 扩展。托盘不可用时歌词界面仍可正常运行。
 
@@ -137,7 +137,7 @@ Linux 托盘优先使用 StatusNotifierItem，兼容 KDE Plasma 和启用 `tray`
 |---|---|
 | `q` | 退出程序 |
 | `Ctrl+C` | 安全退出并恢复终端状态 |
-| `Ctrl+W` | 在歌词、Waveform 和 cmus 页面之间循环切换 |
+| `Ctrl+W` | 在歌词、Spectrum 和 cmus 页面之间循环切换 |
 | `h` / `?` | 打开或关闭树状帮助页 |
 | `空格` | 播放 / 暂停 |
 | `n` | 下一首 |
@@ -153,7 +153,7 @@ Linux 托盘优先使用 StatusNotifierItem，兼容 KDE Plasma 和启用 `tray`
 
 TUI 底部常驻显示歌曲标题、播放进度、时间以及上一首、播放/暂停、下一首图标。三个播放图标均可使用鼠标左键点击，点击进度条可直接跳转到对应播放位置。超出可用宽度的歌曲标题会自动左右往返滚动。
 
-Waveform 页面使用后台线程调用 `ffmpeg` 将当前歌曲转换为低采样率单声道 PCM，并按时间窗口缓存最小/最大峰值；波形主体不会阻塞 TUI。已播放部分为绿色，未播放部分为灰色，白色竖线表示当前播放位置。点击波形任意位置可直接跳转，底部上一首、播放/暂停和下一首按钮与歌词页共用 cmus 播放控制。
+Spectrum 页面只在显示时启动实时捕获：后台线程通过 PipeWire `pw-cat` 的 sink monitor 获取 48kHz 单声道 `f32` PCM，按 2048 点窗口分析 64 个 45Hz–16kHz 对数频带，并进行快速上升、缓慢衰减和峰值保持。频谱约 23 FPS 更新，低频在左、高频在右，柱体按高度使用绿/黄/红显示；底部仍保留播放进度和上一首、播放/暂停、下一首控制。该频谱反映默认输出设备的实际声音，因此同时播放的其他系统音频也会进入频谱。
 
 执行命令后，命令输出会在底栏显示 1 秒，然后自动恢复播放器。进入命令模式时播放器底栏临时切换为 `:` 输入行。
 
