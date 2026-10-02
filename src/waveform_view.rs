@@ -10,11 +10,11 @@ use std::time::{Duration, Instant};
 
 use crate::cmus::{CmusInfo, PlaybackCommand, control_cmus, seek_cmus};
 use crate::i18n::{Locale, format as tr_format, tr};
-use crate::waveform::{Waveform, WaveformSnapshot};
+use crate::waveform::SpectrumSnapshot;
 
-pub struct WaveformView {
+pub struct SpectrumView {
     locale: Locale,
-    waveform_area: Option<Rect>,
+    progress_bar: Option<Rect>,
     previous_button: Option<Rect>,
     play_pause_button: Option<Rect>,
     next_button: Option<Rect>,
@@ -23,11 +23,11 @@ pub struct WaveformView {
     message_expires_at: Option<Instant>,
 }
 
-impl WaveformView {
+impl SpectrumView {
     pub fn new(locale: Locale) -> Self {
         Self {
             locale,
-            waveform_area: None,
+            progress_bar: None,
             previous_button: None,
             play_pause_button: None,
             next_button: None,
@@ -37,67 +37,53 @@ impl WaveformView {
         }
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, info: &CmusInfo, snapshot: &WaveformSnapshot) {
+    pub fn draw(&mut self, frame: &mut Frame, info: &CmusInfo, snapshot: &SpectrumSnapshot) {
         self.expire_message();
         let area = frame.area();
         let vertical = Layout::vertical([
             Constraint::Length(2),
-            Constraint::Min(3),
+            Constraint::Min(5),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .split(area);
 
         self.draw_header(frame, vertical[0], info);
-
-        let waveform_area = inset_horizontal(vertical[1], 2);
-        self.waveform_area = Some(waveform_area);
-        self.progress_duration = info.duration;
+        let spectrum_area = inset_horizontal(vertical[1], 1);
 
         match snapshot {
-            WaveformSnapshot::Ready { file, waveform } if file.to_string_lossy() == info.file => {
-                draw_waveform(frame, waveform_area, waveform, info.position, info.duration);
+            SpectrumSnapshot::Ready { levels, peaks } => {
+                draw_spectrum(frame, spectrum_area, levels, peaks);
             }
-            WaveformSnapshot::Loading { file } if file.to_string_lossy() == info.file => {
+            SpectrumSnapshot::Starting | SpectrumSnapshot::Idle => {
                 draw_centered_status(
                     frame,
-                    waveform_area,
-                    tr(self.locale, "waveform_loading"),
+                    spectrum_area,
+                    tr(self.locale, "spectrum_starting"),
                     Color::DarkGray,
                 );
             }
-            WaveformSnapshot::Error { file, message } if file.to_string_lossy() == info.file => {
+            SpectrumSnapshot::Error { message } => {
                 draw_centered_status(
                     frame,
-                    waveform_area,
+                    spectrum_area,
                     &tr_format(
                         self.locale,
-                        "waveform_error",
+                        "spectrum_error",
                         &[("error", message.as_ref())],
                     ),
                     Color::Red,
                 );
             }
-            _ if info.file.is_empty() => {
-                draw_centered_status(
-                    frame,
-                    waveform_area,
-                    tr(self.locale, "waveform_no_track"),
-                    Color::DarkGray,
-                );
-            }
-            _ => {
-                draw_centered_status(
-                    frame,
-                    waveform_area,
-                    tr(self.locale, "waveform_loading"),
-                    Color::DarkGray,
-                );
-            }
         }
 
-        self.draw_time(frame, vertical[2], info);
-        self.draw_controls(frame, vertical[3], info);
+        frame.render_widget(
+            Paragraph::new(frequency_scale(vertical[2].width))
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::DarkGray)),
+            vertical[2],
+        );
+        self.draw_player_bar(frame, vertical[3], info);
     }
 
     pub fn handle_input(&mut self, key: KeyEvent) -> bool {
@@ -128,8 +114,8 @@ impl WaveformView {
             return;
         }
 
-        if contains(self.waveform_area, event.column, event.row) && self.progress_duration > 0 {
-            let area = self.waveform_area.unwrap();
+        if contains(self.progress_bar, event.column, event.row) && self.progress_duration > 0 {
+            let area = self.progress_bar.unwrap();
             let position = seek_position(area, event.column, self.progress_duration);
             if let Err(error) = seek_cmus(position) {
                 self.show_message(tr_format(
@@ -158,6 +144,7 @@ impl WaveformView {
         } else {
             &info.artist
         };
+        let subtitle = format!("{}  ·  {}", artist, tr(self.locale, "spectrum_live"));
 
         let lines = vec![
             Line::from(Span::styled(
@@ -166,12 +153,47 @@ impl WaveformView {
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             )),
-            Line::from(Span::styled(artist, Style::default().fg(Color::DarkGray))),
+            Line::from(Span::styled(
+                subtitle,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )),
         ];
         frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
     }
 
-    fn draw_time(&self, frame: &mut Frame, area: Rect, info: &CmusInfo) {
+    fn draw_player_bar(&mut self, frame: &mut Frame, area: Rect, info: &CmusInfo) {
+        let horizontal = Layout::horizontal([
+            Constraint::Min(8),
+            Constraint::Length(13),
+            Constraint::Length(5),
+            Constraint::Length(5),
+            Constraint::Length(5),
+        ])
+        .spacing(1)
+        .split(area);
+
+        let bar_width = horizontal[0].width as usize;
+        let progress = if info.duration == 0 {
+            0
+        } else {
+            ((info.position.min(info.duration) as f64 / info.duration as f64) * bar_width as f64)
+                .round() as usize
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("━".repeat(progress), Style::default().fg(Color::Green)),
+                Span::styled(
+                    "─".repeat(bar_width.saturating_sub(progress)),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])),
+            horizontal[0],
+        );
+        self.progress_bar = Some(horizontal[0]);
+        self.progress_duration = info.duration;
+
         let text = if self.message.is_empty() {
             format!(
                 "{} / {}",
@@ -185,20 +207,16 @@ impl WaveformView {
             Paragraph::new(text)
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(Color::Gray)),
-            area,
+            horizontal[1],
         );
-    }
 
-    fn draw_controls(&mut self, frame: &mut Frame, area: Rect, info: &CmusInfo) {
-        let (previous, play_pause, next) = control_rects(area);
-        self.previous_button = Some(previous);
-        self.play_pause_button = Some(play_pause);
-        self.next_button = Some(next);
-
-        draw_button(frame, previous, "⏮︎", false);
+        self.previous_button = Some(horizontal[2]);
+        self.play_pause_button = Some(horizontal[3]);
+        self.next_button = Some(horizontal[4]);
+        draw_button(frame, horizontal[2], "⏮︎", false);
         draw_button(
             frame,
-            play_pause,
+            horizontal[3],
             if info.status == "playing" {
                 "⏸︎"
             } else {
@@ -206,7 +224,7 @@ impl WaveformView {
             },
             true,
         );
-        draw_button(frame, next, "⏭︎", false);
+        draw_button(frame, horizontal[4], "⏭︎", false);
     }
 
     fn control_playback(&mut self, command: PlaybackCommand) {
@@ -238,97 +256,111 @@ impl WaveformView {
     }
 }
 
-impl Default for WaveformView {
+impl Default for SpectrumView {
     fn default() -> Self {
         Self::new(crate::i18n::preferred_locale())
     }
 }
 
-fn draw_waveform(frame: &mut Frame, area: Rect, waveform: &Waveform, position: u64, duration: u64) {
-    if area.width == 0 || area.height == 0 {
+fn draw_spectrum(frame: &mut Frame, area: Rect, levels: &[f32], peaks: &[f32]) {
+    if area.width < 2 || area.height == 0 || levels.is_empty() {
         return;
     }
 
-    let peaks = waveform.resample(area.width as usize);
-    if peaks.is_empty() {
-        return;
-    }
+    let bar_count = (area.width as usize / 2).clamp(1, levels.len());
+    let levels = resample_bands(levels, bar_count);
+    let peaks = resample_bands(peaks, bar_count);
+    let content_width = (bar_count * 2).saturating_sub(1) as u16;
+    let left_padding = area.width.saturating_sub(content_width) / 2;
+    let height = area.height as usize;
 
-    let center = area.height / 2;
-    let upper_height = center.max(1);
-    let lower_height = area.height.saturating_sub(center + 1).max(1);
-    let cursor = if duration == 0 {
-        None
-    } else {
-        Some(
-            ((position.min(duration) as f64 / duration as f64)
-                * f64::from(area.width.saturating_sub(1)))
-            .round() as usize,
-        )
-    };
-
-    let lines = (0..area.height)
+    let lines = (0..height)
         .map(|row| {
-            let glyphs = peaks
-                .iter()
-                .map(|peak| {
-                    if row == center {
-                        '─'
-                    } else if row < center {
-                        let distance = center - row;
-                        let filled = (peak.max.max(0.0) * f32::from(upper_height)).ceil() as u16;
-                        if filled > 0 && distance <= filled {
-                            '█'
-                        } else {
-                            ' '
-                        }
-                    } else {
-                        let distance = row - center;
-                        let filled = (-peak.min.min(0.0) * f32::from(lower_height)).ceil() as u16;
-                        if filled > 0 && distance <= filled {
-                            '█'
-                        } else {
-                            ' '
-                        }
-                    }
-                })
-                .collect::<Vec<_>>();
-
-            if let Some(cursor) = cursor.filter(|cursor| *cursor < glyphs.len()) {
-                let before = glyphs[..cursor].iter().collect::<String>();
-                let after = glyphs[cursor + 1..].iter().collect::<String>();
-                Line::from(vec![
-                    Span::styled(before, Style::default().fg(Color::Green)),
-                    Span::styled(
-                        if row == center { "┼" } else { "│" },
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(after, Style::default().fg(Color::DarkGray)),
-                ])
-            } else {
-                Line::from(Span::styled(
-                    glyphs.iter().collect::<String>(),
-                    Style::default().fg(Color::DarkGray),
-                ))
+            let from_bottom = height - row;
+            let mut spans = Vec::<Span<'static>>::with_capacity(bar_count * 2 + 1);
+            if left_padding > 0 {
+                spans.push(Span::raw(" ".repeat(left_padding as usize)));
             }
+
+            for index in 0..bar_count {
+                let filled = (levels[index].clamp(0.0, 1.0) * height as f32).round() as usize;
+                let peak_row = (peaks[index].clamp(0.0, 1.0) * height as f32)
+                    .round()
+                    .max(1.0) as usize;
+                let character = if from_bottom <= filled {
+                    "█"
+                } else if from_bottom == peak_row {
+                    "▔"
+                } else {
+                    " "
+                };
+
+                let color = if character == "▔" {
+                    Color::White
+                } else {
+                    spectrum_color(row, height)
+                };
+                spans.push(Span::styled(character, Style::default().fg(color)));
+                if index + 1 < bar_count {
+                    spans.push(Span::raw(" "));
+                }
+            }
+            Line::from(spans)
         })
         .collect::<Vec<_>>();
 
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+fn resample_bands(values: &[f32], target: usize) -> Vec<f32> {
+    if target == 0 || values.is_empty() {
+        return Vec::new();
+    }
+
+    (0..target)
+        .map(|index| {
+            let start = index * values.len() / target;
+            let mut end = (index + 1) * values.len() / target;
+            if end <= start {
+                end = (start + 1).min(values.len());
+            }
+            values[start.min(values.len() - 1)..end.min(values.len())]
+                .iter()
+                .copied()
+                .fold(0.0_f32, f32::max)
+        })
+        .collect()
+}
+
+fn spectrum_color(row: usize, height: usize) -> Color {
+    if height == 0 {
+        return Color::Green;
+    }
+    let fraction = row as f32 / height as f32;
+    if fraction < 0.18 {
+        Color::Red
+    } else if fraction < 0.42 {
+        Color::Yellow
+    } else {
+        Color::Green
+    }
+}
+
+fn frequency_scale(width: u16) -> &'static str {
+    if width >= 72 {
+        "45Hz          250Hz          1kHz          4kHz          16kHz"
+    } else if width >= 42 {
+        "45Hz       250Hz       1kHz       16kHz"
+    } else {
+        "45Hz  ·  1kHz  ·  16kHz"
+    }
+}
+
 fn draw_centered_status(frame: &mut Frame, area: Rect, text: &str, color: Color) {
     if area.height == 0 {
         return;
     }
-    let row = Rect::new(
-        area.x,
-        area.y + area.height / 2,
-        area.width,
-        1.min(area.height),
-    );
+    let row = Rect::new(area.x, area.y + area.height / 2, area.width, 1);
     frame.render_widget(
         Paragraph::new(text)
             .alignment(Alignment::Center)
@@ -347,17 +379,6 @@ fn draw_button(frame: &mut Frame, area: Rect, icon: &str, primary: bool) {
             .style(style),
         area,
     );
-}
-
-fn control_rects(area: Rect) -> (Rect, Rect, Rect) {
-    let button_width = 5u16;
-    let total_width = button_width * 3;
-    let start = area.x + area.width.saturating_sub(total_width) / 2;
-    (
-        Rect::new(start, area.y, button_width, area.height),
-        Rect::new(start + button_width, area.y, button_width, area.height),
-        Rect::new(start + button_width * 2, area.y, button_width, area.height),
-    )
 }
 
 fn inset_horizontal(area: Rect, margin: u16) -> Rect {
@@ -394,7 +415,7 @@ fn format_time(seconds: u64) -> String {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
-    use std::{path::PathBuf, sync::Arc};
+    use std::sync::Arc;
 
     fn buffer_text(terminal: &Terminal<TestBackend>) -> String {
         terminal
@@ -407,28 +428,20 @@ mod tests {
     }
 
     #[test]
-    fn waveform_view_renders_track_time_and_cursor() {
-        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
-        let mut view = WaveformView::new(Locale::En);
+    fn spectrum_view_renders_live_bars_and_player() {
+        let mut terminal = Terminal::new(TestBackend::new(100, 18)).unwrap();
+        let mut view = SpectrumView::new(Locale::En);
         let info = CmusInfo {
             title: "Song".to_string(),
             artist: "Artist".to_string(),
             position: 30,
             duration: 120,
             status: "playing".to_string(),
-            file: "/tmp/song.flac".to_string(),
+            ..CmusInfo::default()
         };
-        let snapshot = WaveformSnapshot::Ready {
-            file: PathBuf::from("/tmp/song.flac"),
-            waveform: Arc::new(Waveform {
-                peaks: vec![
-                    crate::waveform::WaveformPeak {
-                        min: -0.8,
-                        max: 0.8,
-                    };
-                    100
-                ],
-            }),
+        let snapshot = SpectrumSnapshot::Ready {
+            levels: Arc::from(vec![0.25, 0.5, 0.75, 1.0].into_boxed_slice()),
+            peaks: Arc::from(vec![0.3, 0.55, 0.8, 1.0].into_boxed_slice()),
         };
 
         terminal
@@ -437,8 +450,14 @@ mod tests {
 
         let text = buffer_text(&terminal);
         assert!(text.contains("Song"));
-        assert!(text.contains("Artist"));
+        assert!(text.contains("LIVE SPECTRUM"));
         assert!(text.contains("00:30 / 02:00"));
-        assert!(text.contains('│') || text.contains('┼'));
+        assert!(text.contains('█'));
+        assert!(text.contains("16kHz"));
+    }
+
+    #[test]
+    fn resampling_keeps_strongest_band() {
+        assert_eq!(resample_bands(&[0.1, 0.8, 0.2, 0.4], 2), vec![0.8, 0.4]);
     }
 }

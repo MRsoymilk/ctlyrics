@@ -24,8 +24,8 @@ use ctlyrics::logger::init_logger;
 use ctlyrics::lyrics_cache::{LyricsCache, current_lyric_line};
 use ctlyrics::mapping::{MappingStore, get_mapping_path};
 use ctlyrics::player::Player;
-use ctlyrics::waveform::WaveformService;
-use ctlyrics::waveform_view::WaveformView;
+use ctlyrics::waveform::SpectrumService;
+use ctlyrics::waveform_view::SpectrumView;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -191,8 +191,8 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
     };
     #[cfg(not(target_os = "linux"))]
     let mut active_view = ActiveView::Lyrics;
-    let waveform_service = WaveformService::new();
-    let mut waveform_view = WaveformView::new(locale);
+    let spectrum_service = SpectrumService::new();
+    let mut spectrum_view = SpectrumView::new(locale);
     let cmus_info = CmusInfoPoller::new();
 
     loop {
@@ -212,10 +212,8 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
             player.show_message(tr(locale, "cmus_exited").to_string());
         }
         let info = cmus_info.latest();
-        if active_view == ActiveView::Waveform {
-            waveform_service.request(&info.file);
-        }
-        let waveform_snapshot = waveform_service.snapshot();
+        spectrum_service.set_active(active_view == ActiveView::Spectrum);
+        let spectrum_snapshot = spectrum_service.snapshot();
         let lyrics = lyrics_cache.load_lyrics(&info.title, Some(&info.artist), Some(&info.file));
         let lyric = current_lyric_line(&lyrics, info.position as f64 + player.lyric_offset())
             .map(|line| line.text.as_str())
@@ -231,7 +229,7 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
         );
 
         terminal.draw(|frame| match active_view {
-            ActiveView::Waveform => waveform_view.draw(frame, &info, &waveform_snapshot),
+            ActiveView::Spectrum => spectrum_view.draw(frame, &info, &spectrum_snapshot),
             ActiveView::Cmus => {
                 #[cfg(target_os = "linux")]
                 if let Some(cmus) = embedded_cmus.as_ref() {
@@ -243,7 +241,12 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
             ActiveView::Lyrics => player.draw(frame, &info, &lyrics),
         })?;
 
-        if event::poll(Duration::from_millis(100))? {
+        let poll_interval = if active_view == ActiveView::Spectrum {
+            Duration::from_millis(33)
+        } else {
+            Duration::from_millis(100)
+        };
+        if event::poll(poll_interval)? {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     if is_safe_quit(key) {
@@ -251,8 +254,8 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
                     }
                     if is_view_switch(key) && key.kind == KeyEventKind::Press {
                         match active_view {
-                            ActiveView::Lyrics => active_view = ActiveView::Waveform,
-                            ActiveView::Waveform => {
+                            ActiveView::Lyrics => active_view = ActiveView::Spectrum,
+                            ActiveView::Spectrum => {
                                 #[cfg(target_os = "linux")]
                                 {
                                     if embedded_cmus.is_some() {
@@ -322,7 +325,7 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
                     }
                     if key.kind == KeyEventKind::Press {
                         let should_quit = match active_view {
-                            ActiveView::Waveform => waveform_view.handle_input(key),
+                            ActiveView::Spectrum => spectrum_view.handle_input(key),
                             _ => player.handle_input(key),
                         };
                         if should_quit {
@@ -347,7 +350,7 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
                         continue;
                     }
                     match active_view {
-                        ActiveView::Waveform => waveform_view.handle_mouse(mouse),
+                        ActiveView::Spectrum => spectrum_view.handle_mouse(mouse),
                         _ => player.handle_mouse(mouse),
                     }
                 }
@@ -376,7 +379,7 @@ fn run_tui(locale: Locale, exit: ExitSignal, tray: &TrayService) -> Result<()> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ActiveView {
     Lyrics,
-    Waveform,
+    Spectrum,
     Cmus,
 }
 
