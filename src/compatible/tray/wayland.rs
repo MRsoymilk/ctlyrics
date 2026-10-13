@@ -14,16 +14,19 @@ use smithay_client_toolkit::reexports::client::{
     globals::registry_queue_init,
     protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
+use smithay_client_toolkit::reexports::protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
-    delegate_seat, delegate_shm, delegate_xdg_shell, delegate_xdg_window,
+    delegate_relative_pointer, delegate_seat, delegate_shm, delegate_xdg_shell,
+    delegate_xdg_window,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
         pointer::{AxisScroll, BTN_LEFT, PointerEvent, PointerEventKind, PointerHandler},
+        relative_pointer::{RelativeMotionEvent, RelativePointerHandler, RelativePointerState},
     },
     shell::{
         WaylandSurface,
@@ -48,6 +51,7 @@ use super::bubble::{
 };
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(40);
+const DRAG_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const DRAG_THRESHOLD: f64 = 4.0;
 const DEFAULT_MARGIN: i32 = 16;
 const RENDER_SCREEN_WIDTH: u16 = 1920;
@@ -176,12 +180,50 @@ struct DragState {
     grab: (f64, f64),
     serial: u32,
     started: bool,
+    origin: (i32, i32),
+    displacement: (f64, f64),
+}
+
+impl DragState {
+    fn new(grab: (f64, f64), serial: u32, origin: (i32, i32)) -> Self {
+        Self {
+            grab,
+            serial,
+            started: false,
+            origin,
+            displacement: (0.0, 0.0),
+        }
+    }
+
+    fn relative_motion(
+        &mut self,
+        delta: (f64, f64),
+        bubble_size: (u16, u16),
+        screen_size: (u16, u16),
+    ) -> Option<(i32, i32)> {
+        self.displacement.0 += delta.0;
+        self.displacement.1 += delta.1;
+        if !self.started
+            && self.displacement.0.abs().max(self.displacement.1.abs()) < DRAG_THRESHOLD
+        {
+            return None;
+        }
+        self.started = true;
+        let x = (f64::from(self.origin.0) + self.displacement.0)
+            .clamp(0.0, f64::from(screen_size.0.saturating_sub(bubble_size.0)));
+        let y = (f64::from(self.origin.1) + self.displacement.1)
+            .clamp(0.0, f64::from(screen_size.1.saturating_sub(bubble_size.1)));
+        // Retain fractional motion, but discard overshoot so reversing at an edge is immediate.
+        self.displacement = (x - f64::from(self.origin.0), y - f64::from(self.origin.1));
+        Some((x.round() as i32, y.round() as i32))
+    }
 }
 
 struct State {
     registry_state: RegistryState,
     output_state: OutputState,
     seat_state: SeatState,
+    relative_pointer_state: RelativePointerState,
     compositor: CompositorState,
     layer_shell: Option<LayerShell>,
     xdg_shell: Option<XdgShell>,
@@ -191,6 +233,7 @@ struct State {
     buffer_size: (u16, u16),
     shell: Option<ShellSurface>,
     pointer: Option<wl_pointer::WlPointer>,
+    relative_pointer: Option<zwp_relative_pointer_v1::ZwpRelativePointerV1>,
     pointer_seat: Option<wl_seat::WlSeat>,
     active_output: Option<wl_output::WlOutput>,
     screen_size: (u16, u16),
@@ -199,6 +242,9 @@ struct State {
     font_size: u16,
     orientation: LyricOrientation,
     position: Option<(i32, i32)>,
+    bubble_size: (u16, u16),
+    pending_layer_position: Option<(i32, i32)>,
+    last_move: Instant,
     drag: Option<DragState>,
     visible: bool,
     configured: bool,
@@ -236,6 +282,7 @@ fn run(
             }
         }
         event_loop.dispatch(Duration::from_millis(20), &mut state)?;
+        state.flush_layer_move(false);
         if state.visible
             && state.configured
             && state.frame_ready
@@ -258,8 +305,19 @@ fn initialize(
         .insert(event_loop.handle())
         .map_err(|error| anyhow!(error.to_string()))?;
     let compositor = CompositorState::bind(&globals, &qh)?;
-    let layer_shell = LayerShell::bind(&globals, &qh).ok();
+    let mut layer_shell = LayerShell::bind(&globals, &qh).ok();
     let xdg_shell = XdgShell::bind(&globals, &qh).ok();
+    let has_relative_pointer = globals.contents().with_list(|globals| {
+        globals
+            .iter()
+            .any(|global| global.interface == "zwp_relative_pointer_manager_v1")
+    });
+    if layer_shell.is_some() && !has_relative_pointer && xdg_shell.is_some() {
+        tracing::debug!(
+            "relative pointer unavailable; using compositor-managed lyric window dragging"
+        );
+        layer_shell = None;
+    }
     if layer_shell.is_none() && xdg_shell.is_none() {
         return Err(anyhow!("neither layer shell nor xdg shell is available"));
     }
@@ -272,6 +330,7 @@ fn initialize(
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
         seat_state: SeatState::new(&globals, &qh),
+        relative_pointer_state: RelativePointerState::bind(&globals, &qh),
         compositor,
         layer_shell,
         xdg_shell,
@@ -281,6 +340,7 @@ fn initialize(
         buffer_size: (0, 0),
         shell: None,
         pointer: None,
+        relative_pointer: None,
         pointer_seat: None,
         active_output: None,
         screen_size: (RENDER_SCREEN_WIDTH, RENDER_SCREEN_HEIGHT),
@@ -289,6 +349,9 @@ fn initialize(
         font_size,
         orientation: LyricOrientation::Horizontal,
         position: None,
+        bubble_size: (80, 42),
+        pending_layer_position: None,
+        last_move: Instant::now(),
         drag: None,
         visible: false,
         configured: false,
@@ -363,6 +426,7 @@ impl State {
             .rendered()
             .map(|(_, width, height)| (width, height))
             .unwrap_or((80, 42));
+        self.bubble_size = (width, height);
         self.configured = false;
         self.buffer = None;
         self.buffer_size = (0, 0);
@@ -403,6 +467,7 @@ impl State {
         self.buffer = None;
         self.buffer_size = (0, 0);
         self.drag = None;
+        self.pending_layer_position = None;
         self.visible = false;
         self.configured = false;
         self.frame_ready = true;
@@ -416,9 +481,13 @@ impl State {
         let Some((_, width, height)) = rendered else {
             return;
         };
+        self.bubble_size = (width, height);
         if let ShellSurface::Layer(layer) = shell {
             let position = clamp_position(
-                self.position.unwrap_or((DEFAULT_MARGIN, DEFAULT_MARGIN)),
+                self.pending_layer_position
+                    .take()
+                    .or(self.position)
+                    .unwrap_or((DEFAULT_MARGIN, DEFAULT_MARGIN)),
                 (width, height),
                 self.screen_size,
             );
@@ -474,37 +543,24 @@ impl State {
         Ok(())
     }
 
-    fn move_layer(&mut self, pointer_position: (f64, f64)) {
-        let Some(drag) = self.drag.as_mut() else {
-            return;
-        };
-        let delta = (
-            pointer_position.0 - drag.grab.0,
-            pointer_position.1 - drag.grab.1,
-        );
-        if !drag.started && delta.0.abs().max(delta.1.abs()) < DRAG_THRESHOLD {
+    fn flush_layer_move(&mut self, force: bool) {
+        if !force && self.last_move.elapsed() < DRAG_FRAME_INTERVAL {
             return;
         }
-        drag.started = true;
+        let Some(position) = self.pending_layer_position.take() else {
+            return;
+        };
         let Some(ShellSurface::Layer(layer)) = &self.shell else {
             return;
         };
-        let (x, y) = self.position.unwrap_or((DEFAULT_MARGIN, DEFAULT_MARGIN));
-        let size = self
-            .rendered()
-            .map(|(_, width, height)| (width, height))
-            .unwrap_or((80, 42));
-        let position = clamp_position(
-            (
-                (f64::from(x) + delta.0).round() as i32,
-                (f64::from(y) + delta.1).round() as i32,
-            ),
-            size,
-            self.screen_size,
-        );
+        let position = clamp_position(position, self.bubble_size, self.screen_size);
+        if self.position == Some(position) {
+            return;
+        }
         self.position = Some(position);
         layer.set_margin(position.1, 0, 0, position.0);
         layer.commit();
+        self.last_move = Instant::now();
     }
 
     fn pointer_axis(&mut self, vertical: AxisScroll) {
@@ -686,6 +742,10 @@ impl SeatHandler for State {
         if capability == Capability::Pointer && self.pointer.is_none() {
             match self.seat_state.get_pointer(qh, &seat) {
                 Ok(pointer) => {
+                    self.relative_pointer = self
+                        .relative_pointer_state
+                        .get_relative_pointer(&pointer, qh)
+                        .ok();
                     self.pointer = Some(pointer);
                     self.pointer_seat = Some(seat);
                 }
@@ -702,11 +762,15 @@ impl SeatHandler for State {
         capability: Capability,
     ) {
         if capability == Capability::Pointer && self.pointer_seat.as_ref() == Some(&seat) {
+            if let Some(relative_pointer) = self.relative_pointer.take() {
+                relative_pointer.destroy();
+            }
             if let Some(pointer) = self.pointer.take() {
                 pointer.release();
             }
             self.pointer_seat = None;
             self.drag = None;
+            self.pending_layer_position = None;
         }
     }
 
@@ -717,9 +781,15 @@ impl SeatHandler for State {
         seat: wl_seat::WlSeat,
     ) {
         if self.pointer_seat.as_ref() == Some(&seat) {
-            self.pointer = None;
+            if let Some(relative_pointer) = self.relative_pointer.take() {
+                relative_pointer.destroy();
+            }
+            if let Some(pointer) = self.pointer.take() {
+                pointer.release();
+            }
             self.pointer_seat = None;
             self.drag = None;
+            self.pending_layer_position = None;
         }
     }
 }
@@ -746,11 +816,11 @@ impl PointerHandler for State {
                     button,
                     serial,
                 } if button == BTN_LEFT => {
-                    self.drag = Some(DragState {
-                        grab: event.position,
+                    self.drag = Some(DragState::new(
+                        event.position,
                         serial,
-                        started: false,
-                    });
+                        self.position.unwrap_or((DEFAULT_MARGIN, DEFAULT_MARGIN)),
+                    ));
                 }
                 PointerEventKind::Motion { .. } => {
                     if events[index + 1..]
@@ -774,11 +844,16 @@ impl PointerHandler for State {
                             window.move_(seat, drag.serial);
                             drag.started = true;
                         }
-                    } else if !is_xdg {
-                        self.move_layer(event.position);
+                    } else if !is_xdg && self.relative_pointer.is_none() && should_start {
+                        // A layer-only compositor without relative motion cannot safely move the
+                        // surface. Still distinguish a drag from a click so release does not hide it.
+                        if let Some(drag) = self.drag.as_mut() {
+                            drag.started = true;
+                        }
                     }
                 }
                 PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
+                    self.flush_layer_move(true);
                     let clicked = self.drag.take().is_some_and(|drag| !drag.started);
                     if clicked {
                         self.hide();
@@ -791,10 +866,36 @@ impl PointerHandler for State {
     }
 }
 
+impl RelativePointerHandler for State {
+    fn relative_pointer_motion(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        relative_pointer: &zwp_relative_pointer_v1::ZwpRelativePointerV1,
+        pointer: &wl_pointer::WlPointer,
+        event: RelativeMotionEvent,
+    ) {
+        if self.relative_pointer.as_ref() != Some(relative_pointer)
+            || self.pointer.as_ref() != Some(pointer)
+            || !matches!(self.shell, Some(ShellSurface::Layer(_)))
+        {
+            return;
+        }
+        if let Some(drag) = self.drag.as_mut()
+            && let Some(position) =
+                drag.relative_motion(event.delta, self.bubble_size, self.screen_size)
+        {
+            self.pending_layer_position = Some(position);
+        }
+    }
+}
+
 impl LayerShellHandler for State {
     fn closed(&mut self, _connection: &Connection, qh: &QueueHandle<Self>, layer: &LayerSurface) {
         if matches!(&self.shell, Some(ShellSurface::Layer(current)) if current == layer) {
             self.shell = None;
+            self.drag = None;
+            self.pending_layer_position = None;
             self.layer_shell = None;
             self.configured = false;
             if self.visible {
@@ -866,6 +967,7 @@ delegate_output!(State);
 delegate_shm!(State);
 delegate_seat!(State);
 delegate_pointer!(State);
+delegate_relative_pointer!(State);
 delegate_layer!(State);
 delegate_xdg_shell!(State);
 delegate_xdg_window!(State);
@@ -873,6 +975,85 @@ delegate_xdg_window!(State);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_drag_accumulates_motion_without_waiting_for_window_updates() {
+        let mut drag = DragState::new((20.0, 10.0), 1, (100, 100));
+        let size = (100, 80);
+        let screen = (1920, 1080);
+
+        // The compositor may not have applied any window move yet. Each physical delta
+        // must still be added exactly once, independently of surface-local coordinates.
+        assert_eq!(
+            drag.relative_motion((10.0, 5.0), size, screen),
+            Some((110, 105))
+        );
+        assert_eq!(
+            drag.relative_motion((10.0, 5.0), size, screen),
+            Some((120, 110))
+        );
+        assert_eq!(
+            drag.relative_motion((0.0, 0.0), size, screen),
+            Some((120, 110))
+        );
+        assert_eq!(
+            drag.relative_motion((-5.0, -5.0), size, screen),
+            Some((115, 105))
+        );
+    }
+
+    #[test]
+    fn relative_drag_preserves_fractional_motion() {
+        let mut drag = DragState::new((0.0, 0.0), 1, (100, 100));
+        let size = (100, 80);
+        let screen = (1920, 1080);
+        assert_eq!(
+            drag.relative_motion((4.0, 0.0), size, screen),
+            Some((104, 100))
+        );
+        for _ in 0..4 {
+            drag.relative_motion((0.25, 0.25), size, screen);
+        }
+        assert_eq!(
+            drag.relative_motion((0.0, 0.0), size, screen),
+            Some((105, 101))
+        );
+    }
+
+    #[test]
+    fn relative_drag_keeps_small_movements_as_clicks() {
+        let mut drag = DragState::new((20.0, 10.0), 1, (100, 100));
+        let size = (100, 80);
+        let screen = (1920, 1080);
+        assert_eq!(drag.relative_motion((1.5, 0.0), size, screen), None);
+        assert_eq!(drag.relative_motion((1.5, 0.0), size, screen), None);
+        assert!(!drag.started);
+        assert_eq!(
+            drag.relative_motion((1.0, 0.0), size, screen),
+            Some((104, 100))
+        );
+        assert!(drag.started);
+    }
+
+    #[test]
+    fn relative_drag_can_reverse_immediately_at_screen_edges() {
+        let mut drag = DragState::new((0.0, 0.0), 1, (10, 10));
+        let size = (100, 80);
+        let screen = (800, 600);
+        assert_eq!(
+            drag.relative_motion((-100.0, -100.0), size, screen),
+            Some((0, 0))
+        );
+        assert_eq!(drag.relative_motion((1.0, 1.0), size, screen), Some((1, 1)));
+        assert_eq!(
+            drag.relative_motion((1000.0, 1000.0), size, screen),
+            Some((700, 520))
+        );
+        assert_eq!(
+            drag.relative_motion((-1.0, -1.0), size, screen),
+            Some((699, 519))
+        );
+    }
 
     #[test]
     fn dragged_position_is_clamped_to_the_render_area() {
