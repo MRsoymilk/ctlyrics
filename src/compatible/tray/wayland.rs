@@ -49,6 +49,8 @@ use super::bubble::{
     LyricBubbleContent, LyricOrientation, adjusted_font_size, load_font, load_font_size,
     render_lyric_bubble, save_font_size,
 };
+use super::{PlaybackInfo, controls::ControlPanel};
+use crate::i18n::Locale;
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(40);
 const DRAG_FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -61,6 +63,7 @@ enum Command {
     Toggle(String),
     Update(String),
     SetOrientation(LyricOrientation),
+    ShowControls,
     Shutdown,
 }
 
@@ -71,6 +74,10 @@ pub(super) struct WaylandBubbleSender {
 }
 
 impl WaylandBubbleSender {
+    pub(super) fn show_controls(&self) -> bool {
+        self.send(Command::ShowControls)
+    }
+
     pub(super) fn toggle(&self, lyric: String) -> bool {
         self.send(Command::Toggle(lyric))
     }
@@ -107,7 +114,7 @@ impl Drop for AliveGuard {
 }
 
 impl WaylandBubble {
-    pub(super) fn start(initial_lyric: String) -> Result<Self> {
+    pub(super) fn start(locale: Locale, playback: PlaybackInfo) -> Result<Self> {
         let (command_tx, command_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let alive = Arc::new(AtomicBool::new(true));
@@ -116,7 +123,7 @@ impl WaylandBubble {
             .name("ctlyrics-wayland-lyric".to_string())
             .spawn(move || {
                 let _alive = AliveGuard(thread_alive);
-                if let Err(error) = run(initial_lyric, command_rx, ready_tx) {
+                if let Err(error) = run(locale, playback, command_rx, ready_tx) {
                     tracing::debug!(%error, "Wayland lyric window stopped");
                 }
             })
@@ -145,13 +152,13 @@ impl WaylandBubble {
     }
 }
 
-enum ShellSurface {
+pub(super) enum ShellSurface {
     Layer(LayerSurface),
     Xdg(Window),
 }
 
 impl ShellSurface {
-    fn wl_surface(&self) -> &wl_surface::WlSurface {
+    pub(super) fn wl_surface(&self) -> &wl_surface::WlSurface {
         match self {
             Self::Layer(layer) => layer.wl_surface(),
             Self::Xdg(window) => window.wl_surface(),
@@ -165,7 +172,7 @@ impl ShellSurface {
         }
     }
 
-    fn set_size(&self, width: u32, height: u32) {
+    pub(super) fn set_size(&self, width: u32, height: u32) {
         match self {
             Self::Layer(layer) => layer.set_size(width, height),
             Self::Xdg(window) => {
@@ -219,7 +226,7 @@ impl DragState {
     }
 }
 
-struct State {
+pub(super) struct State {
     registry_state: RegistryState,
     output_state: OutputState,
     seat_state: SeatState,
@@ -253,14 +260,16 @@ struct State {
     exit: bool,
     animation_started: Instant,
     last_draw: Instant,
+    controls: ControlPanel,
 }
 
 fn run(
-    initial_lyric: String,
+    locale: Locale,
+    playback: PlaybackInfo,
     commands: Receiver<Command>,
     ready: mpsc::SyncSender<Result<()>>,
 ) -> Result<()> {
-    let (mut event_loop, qh, mut state) = match initialize(initial_lyric) {
+    let (mut event_loop, qh, mut state) = match initialize(locale, playback) {
         Ok(initialized) => initialized,
         Err(error) => {
             let message = error.to_string();
@@ -283,6 +292,10 @@ fn run(
         }
         event_loop.dispatch(Duration::from_millis(20), &mut state)?;
         state.flush_layer_move(false);
+        if let Err(error) = state.controls.draw(&mut state.pool, &qh) {
+            tracing::warn!(%error, "Wayland playback control panel failed");
+            state.controls.close();
+        }
         if state.visible
             && state.configured
             && state.frame_ready
@@ -295,8 +308,10 @@ fn run(
 }
 
 fn initialize(
-    initial_lyric: String,
+    locale: Locale,
+    playback: PlaybackInfo,
 ) -> Result<(EventLoop<'static, State>, QueueHandle<State>, State)> {
+    let initial_lyric = playback.snapshot().lyric;
     let connection = Connection::connect_to_env()?;
     let (globals, event_queue) = registry_queue_init(&connection)?;
     let qh = event_queue.handle();
@@ -360,6 +375,7 @@ fn initialize(
         exit: false,
         animation_started: Instant::now(),
         last_draw: Instant::now(),
+        controls: ControlPanel::new(locale, playback),
     };
     Ok((event_loop, qh, state))
 }
@@ -395,6 +411,12 @@ impl State {
                 self.dirty = true;
                 self.update_size();
             }
+            Command::ShowControls => self.controls.show(
+                &self.compositor,
+                self.layer_shell.as_ref(),
+                self.xdg_shell.as_ref(),
+                qh,
+            ),
             Command::Shutdown => self.exit = true,
         }
     }
@@ -642,10 +664,18 @@ impl CompositorHandler for State {
         &mut self,
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         _time: u32,
     ) {
-        self.frame_ready = true;
+        if self.controls.owns(surface) {
+            self.controls.frame_ready = true;
+        } else if self
+            .shell
+            .as_ref()
+            .is_some_and(|shell| shell.wl_surface() == surface)
+        {
+            self.frame_ready = true;
+        }
     }
 
     fn surface_enter(
@@ -771,6 +801,7 @@ impl SeatHandler for State {
             self.pointer_seat = None;
             self.drag = None;
             self.pending_layer_position = None;
+            self.controls.cancel_drag();
         }
     }
 
@@ -790,6 +821,7 @@ impl SeatHandler for State {
             self.pointer_seat = None;
             self.drag = None;
             self.pending_layer_position = None;
+            self.controls.cancel_drag();
         }
     }
 }
@@ -803,6 +835,10 @@ impl PointerHandler for State {
         events: &[PointerEvent],
     ) {
         for (index, event) in events.iter().enumerate() {
+            if self.controls.owns(&event.surface) {
+                self.controls.pointer_event(event);
+                continue;
+            }
             if self
                 .shell
                 .as_ref()
@@ -892,6 +928,10 @@ impl RelativePointerHandler for State {
 
 impl LayerShellHandler for State {
     fn closed(&mut self, _connection: &Connection, qh: &QueueHandle<Self>, layer: &LayerSurface) {
+        if matches!(&self.controls.shell, Some(ShellSurface::Layer(current)) if current == layer) {
+            self.controls.close();
+            return;
+        }
         if matches!(&self.shell, Some(ShellSurface::Layer(current)) if current == layer) {
             self.shell = None;
             self.drag = None;
@@ -912,6 +952,11 @@ impl LayerShellHandler for State {
         _configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
+        if matches!(&self.controls.shell, Some(ShellSurface::Layer(current)) if current == layer) {
+            self.controls.configured = true;
+            self.controls.dirty = true;
+            return;
+        }
         if matches!(&self.shell, Some(ShellSurface::Layer(current)) if current == layer) {
             self.configured = true;
             self.dirty = true;
@@ -926,6 +971,10 @@ impl WindowHandler for State {
         _qh: &QueueHandle<Self>,
         window: &Window,
     ) {
+        if matches!(&self.controls.shell, Some(ShellSurface::Xdg(current)) if current == window) {
+            self.controls.close();
+            return;
+        }
         if matches!(&self.shell, Some(ShellSurface::Xdg(current)) if current == window) {
             self.hide();
         }
@@ -939,6 +988,11 @@ impl WindowHandler for State {
         _configure: WindowConfigure,
         _serial: u32,
     ) {
+        if matches!(&self.controls.shell, Some(ShellSurface::Xdg(current)) if current == window) {
+            self.controls.configured = true;
+            self.controls.dirty = true;
+            return;
+        }
         if matches!(&self.shell, Some(ShellSurface::Xdg(current)) if current == window) {
             self.configured = true;
             self.dirty = true;

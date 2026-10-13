@@ -83,6 +83,18 @@ impl Tray for TrayItem {
             }
             .into(),
             StandardItem {
+                label: tr(self.locale, "tray_controls").to_string(),
+                icon_name: "media-playback-start".to_string(),
+                enabled: matches!(self.lyric_display, LyricDisplaySender::Wayland { .. }),
+                activate: Box::new(|tray: &mut Self| {
+                    if let LyricDisplaySender::Wayland { wayland, .. } = &tray.lyric_display {
+                        let _ = wayland.show_controls();
+                    }
+                }),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
                 label: tr(self.locale, "tray_previous").to_string(),
                 icon_name: "media-skip-backward".to_string(),
                 activate: Box::new(|_| run_control(PlaybackCommand::Previous)),
@@ -207,8 +219,8 @@ enum LyricDisplay {
 }
 
 impl LyricDisplay {
-    fn start(initial_lyric: String) -> Result<Self> {
-        match WaylandBubble::start(initial_lyric) {
+    fn start(locale: Locale, playback: PlaybackInfo) -> Result<Self> {
+        match WaylandBubble::start(locale, playback) {
             Ok(bubble) => {
                 tracing::info!("using Wayland lyric window");
                 let (fallback_sender, fallback_thread) = start_notification_thread()?;
@@ -270,7 +282,7 @@ fn start_notification_thread() -> Result<(mpsc::Sender<NotificationCommand>, Joi
 
 impl SniTray {
     pub fn start(locale: Locale, exit: ExitSignal, playback: PlaybackInfo) -> Result<Self> {
-        let lyric_display = LyricDisplay::start(playback.snapshot().lyric)?;
+        let lyric_display = LyricDisplay::start(locale, playback.clone())?;
         let lyric_display_sender = lyric_display.sender();
         let scroll_active_until = Arc::new(AtomicU64::new(0));
         let item = TrayItem {

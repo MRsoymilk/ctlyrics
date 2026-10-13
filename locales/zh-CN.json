@@ -40,6 +40,7 @@
   "tray_web": "启动 Web",
   "tray_quit": "关闭",
   "tray_previous": "上一首",
+  "tray_controls": "播放控制",
   "tray_pause": "暂停",
   "tray_play": "播放",
   "tray_next": "下一首",
