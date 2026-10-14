@@ -25,15 +25,20 @@ use crate::cmus::{PlaybackCommand, control_cmus, seek_cmus};
 use crate::i18n::{Locale, tr};
 use crate::web::start_and_open;
 
-const WIDTH: u16 = 420;
-const HEIGHT: u16 = 182;
-const FOOTER_Y: u16 = 134;
-const PADDING: u16 = 12;
+const WIDTH: u16 = 360;
+const HEIGHT: u16 = 162;
+const WEB_Y: u16 = 98;
+const QUIT_Y: u16 = 130;
+const FOOTER_ROW_HEIGHT: u16 = 32;
+const PADDING: u16 = 20;
 const TIME_GAP: u16 = 8;
-const PROGRESS_Y: u16 = 56;
-const BUTTON_Y: u16 = 86;
-const BUTTON_WIDTH: u16 = 116;
-const BUTTON_HEIGHT: u16 = 34;
+const PROGRESS_Y: u16 = 43;
+const PROGRESS_HEIGHT: u16 = 5;
+const BUTTON_Y: u16 = 54;
+const BUTTON_WIDTH: u16 = 44;
+const BUTTON_HEIGHT: u16 = 31;
+const BUTTON_SPACING: u16 = 50;
+const SCROLL_GAP: usize = 48;
 const FRAME_INTERVAL: Duration = Duration::from_millis(40);
 
 #[derive(Clone, Copy, Debug)]
@@ -59,7 +64,7 @@ impl ProgressRow {
     fn contains(&self, position: (f64, f64)) -> bool {
         position.0 >= f64::from(self.track_x)
             && position.0 <= f64::from(self.track_x + self.track_width)
-            && (44.0..76.0).contains(&position.1)
+            && (f64::from(PROGRESS_Y - 8)..f64::from(BUTTON_Y)).contains(&position.1)
     }
 
     fn seek_position(&self, x: f64, duration: u64) -> u64 {
@@ -112,6 +117,9 @@ pub(super) struct ControlPanel {
     locale: Locale,
     font: Option<FontVec>,
     time_metrics: Option<(u64, u16)>,
+    title: Option<RasterizedText>,
+    title_line: String,
+    title_started: Instant,
     buffer: Option<Buffer>,
     buffer_size: (u16, u16),
     width: u16,
@@ -139,6 +147,9 @@ impl ControlPanel {
             locale,
             font: None,
             time_metrics: None,
+            title: None,
+            title_line: String::new(),
+            title_started: Instant::now(),
             buffer: None,
             buffer_size: (0, 0),
             width: WIDTH,
@@ -176,6 +187,7 @@ impl ControlPanel {
             return;
         }
         self.anchor = anchor;
+        self.title_started = Instant::now();
         self.origin = (0, 0);
         self.viewport = (self.width, HEIGHT);
         let surface = compositor.create_surface(qh);
@@ -369,12 +381,8 @@ impl ControlPanel {
             playback.position = seek.position;
         }
         let sample = format!(
-            "{} 0123456789: X {} {} {} {} {} {}",
+            "{} 0123456789: {} {}",
             playback.line,
-            tr(self.locale, "tray_previous"),
-            tr(self.locale, "tray_pause"),
-            tr(self.locale, "tray_play"),
-            tr(self.locale, "tray_next"),
             tr(self.locale, "tray_web"),
             tr(self.locale, "tray_quit")
         );
@@ -385,10 +393,18 @@ impl ControlPanel {
         {
             self.font = load_font(&sample);
             self.time_metrics = None;
+            self.title = None;
         }
         let Some(font) = &self.font else {
             return Ok(());
         };
+        if self.title.is_none() || self.title_line != playback.line {
+            self.title = Some(rasterize_text(font, &playback.line));
+            if self.title_line != playback.line {
+                self.title_started = Instant::now();
+                self.title_line = playback.line.clone();
+            }
+        }
         let elapsed = rasterize_text(font, &format_time(playback.position.min(playback.duration)));
         let duration = rasterize_text(font, &format_time(playback.duration));
         // Reserve the widest digits, including hour-long times, so a proportional font
@@ -428,6 +444,8 @@ impl ControlPanel {
             self.width,
             self.row,
             self.hovered,
+            self.title.as_ref().expect("rasterized menu title"),
+            self.title_started.elapsed(),
         );
         let shell = self.shell.as_ref().expect("visible control panel");
         let surface = shell.wl_surface().clone();
@@ -514,17 +532,16 @@ fn paint_menu(
 }
 
 fn button_at(position: (f64, f64), width: u16) -> Option<Button> {
-    if (f64::from(width - 36)..f64::from(width - PADDING)).contains(&position.0)
-        && (8.0..36.0).contains(&position.1)
+    if (f64::from(width - 32)..f64::from(width - 9)).contains(&position.0)
+        && (9.0..30.0).contains(&position.1)
     {
         return Some(Button::Close);
     }
-    if (f64::from(FOOTER_Y)..f64::from(FOOTER_Y + BUTTON_HEIGHT)).contains(&position.1) {
-        let half = (width - PADDING * 3) / 2;
-        if (f64::from(PADDING)..f64::from(PADDING + half)).contains(&position.0) {
+    if (1.0..f64::from(width - 1)).contains(&position.0) {
+        if (f64::from(WEB_Y)..f64::from(QUIT_Y)).contains(&position.1) {
             return Some(Button::Web);
         }
-        if (f64::from(PADDING * 2 + half)..f64::from(width - PADDING)).contains(&position.0) {
+        if (f64::from(QUIT_Y)..f64::from(HEIGHT - 1)).contains(&position.1) {
             return Some(Button::Quit);
         }
     }
@@ -540,9 +557,12 @@ fn button_at(position: (f64, f64), width: u16) -> Option<Button> {
 
 fn button_positions(width: u16) -> [(Button, u16); 3] {
     [
-        (Button::Previous, PADDING),
+        (
+            Button::Previous,
+            (width - BUTTON_WIDTH) / 2 - BUTTON_SPACING,
+        ),
         (Button::Toggle, (width - BUTTON_WIDTH) / 2),
-        (Button::Next, width - PADDING - BUTTON_WIDTH),
+        (Button::Next, (width - BUTTON_WIDTH) / 2 + BUTTON_SPACING),
     ]
 }
 
@@ -556,33 +576,37 @@ fn render_panel(
     width: u16,
     row: ProgressRow,
     hovered: Option<Button>,
+    title: &RasterizedText,
+    title_elapsed: Duration,
 ) -> Vec<u8> {
     let mut pixels = vec![0; usize::from(width) * usize::from(HEIGHT) * 4];
     for pixel in pixels.chunks_exact_mut(4) {
-        pixel.copy_from_slice(&[24, 24, 28, 255]);
+        pixel.copy_from_slice(&[0, 0, 0, 255]);
     }
-    blit(
-        &mut pixels,
-        width,
-        &rasterize_text(font, &playback.line),
-        PADDING,
-        14,
-        width - 52,
-    );
-    blit(
-        &mut pixels,
-        width,
-        &rasterize_text(font, "X"),
-        width - 30,
-        14,
-        width - PADDING,
-    );
+    outline(&mut pixels, width, (0, 0, width, HEIGHT), [70, 70, 70]);
+    outline(&mut pixels, width, (8, 7, width - 16, 84), [70, 70, 70]);
+    blit_scrolling_title(&mut pixels, width, title, title_elapsed);
+    // A discreet close glyph rather than a text button in the title row.
+    for step in 0..7 {
+        fill(
+            &mut pixels,
+            width,
+            (width - 24 + step, 16 + step, 1, 1),
+            [150, 150, 150],
+        );
+        fill(
+            &mut pixels,
+            width,
+            (width - 18 - step, 16 + step, 1, 1),
+            [150, 150, 150],
+        );
+    }
     blit(
         &mut pixels,
         width,
         elapsed,
         row.elapsed_x,
-        48,
+        PROGRESS_Y - 6,
         row.track_x - TIME_GAP,
     );
     blit(
@@ -590,14 +614,14 @@ fn render_panel(
         width,
         duration,
         row.duration_x,
-        48,
+        PROGRESS_Y - 6,
         width - PADDING,
     );
     fill(
         &mut pixels,
         width,
-        (row.track_x, PROGRESS_Y, row.track_width, 6),
-        [70, 70, 78],
+        (row.track_x, PROGRESS_Y, row.track_width, PROGRESS_HEIGHT),
+        [70, 70, 70],
     );
     let fraction = if playback.duration == 0 {
         0.0
@@ -608,7 +632,7 @@ fn render_panel(
     fill(
         &mut pixels,
         width,
-        (row.track_x, PROGRESS_Y, filled, 6),
+        (row.track_x, PROGRESS_Y, filled, PROGRESS_HEIGHT),
         [70, 230, 158],
     );
     if playback.duration > 0 {
@@ -616,63 +640,46 @@ fn render_panel(
         fill(
             &mut pixels,
             width,
-            (knob, PROGRESS_Y - 4, 5, 14),
+            (knob, PROGRESS_Y - 2, 5, PROGRESS_HEIGHT + 4),
             [235, 255, 246],
         );
     }
     for (button, x) in button_positions(width) {
-        let color = if hovered == Some(button) {
-            [29, 96, 72]
-        } else {
-            [44, 44, 52]
-        };
-        fill(
+        draw_transport(
             &mut pixels,
             width,
-            (x, BUTTON_Y, BUTTON_WIDTH, BUTTON_HEIGHT),
-            color,
-        );
-        let label = match button {
-            Button::Previous => "tray_previous",
-            Button::Toggle if playback.status == "playing" => "tray_pause",
-            Button::Toggle => "tray_play",
-            Button::Next => "tray_next",
-            Button::Close | Button::Web | Button::Quit => unreachable!(),
-        };
-        let text = rasterize_text(font, tr(locale, label));
-        let offset = BUTTON_WIDTH.saturating_sub(text.width as u16) / 2;
-        blit(
-            &mut pixels,
-            width,
-            &text,
-            x + offset,
-            BUTTON_Y + 8,
-            x + BUTTON_WIDTH,
+            button,
+            x,
+            hovered == Some(button),
+            playback.status == "playing",
         );
     }
-    let half = (width - PADDING * 3) / 2;
-    for (button, x, label) in [
-        (Button::Web, PADDING, "tray_web"),
-        (Button::Quit, PADDING * 2 + half, "tray_quit"),
+    fill(
+        &mut pixels,
+        width,
+        (1, WEB_Y - 1, width - 2, 1),
+        [70, 70, 70],
+    );
+    for (button, y, label) in [
+        (Button::Web, WEB_Y, "tray_web"),
+        (Button::Quit, QUIT_Y, "tray_quit"),
     ] {
-        fill(
-            &mut pixels,
-            width,
-            (x, FOOTER_Y, half, BUTTON_HEIGHT),
-            if hovered == Some(button) {
-                [29, 96, 72]
-            } else {
-                [44, 44, 52]
-            },
-        );
+        if hovered == Some(button) {
+            fill(
+                &mut pixels,
+                width,
+                (1, y, width - 2, FOOTER_ROW_HEIGHT.min(HEIGHT - 1 - y)),
+                [29, 96, 72],
+            );
+        }
         let text = rasterize_text(font, tr(locale, label));
         blit(
             &mut pixels,
             width,
             &text,
-            x + half.saturating_sub(text.width as u16) / 2,
-            FOOTER_Y + 8,
-            x + half,
+            width.saturating_sub(text.width as u16) / 2,
+            y + 5,
+            width - 1,
         );
     }
     pixels
@@ -695,6 +702,86 @@ fn menu_origin(anchor: Option<(i32, i32)>, viewport: (u16, u16), size: (u16, u16
             )
         }
         _ => (max_x.saturating_sub(16), max_y.min(16)),
+    }
+}
+
+fn outline(pixels: &mut [u8], width: u16, rect: (u16, u16, u16, u16), color: [u8; 3]) {
+    let (x, y, w, h) = rect;
+    fill(pixels, width, (x, y, w, 1), color);
+    fill(pixels, width, (x, y + h - 1, w, 1), color);
+    fill(pixels, width, (x, y, 1, h), color);
+    fill(pixels, width, (x + w - 1, y, 1, h), color);
+}
+
+fn draw_transport(
+    pixels: &mut [u8],
+    width: u16,
+    button: Button,
+    x: u16,
+    hovered: bool,
+    playing: bool,
+) {
+    if hovered {
+        fill(
+            pixels,
+            width,
+            (x, BUTTON_Y, BUTTON_WIDTH, BUTTON_HEIGHT),
+            [29, 96, 72],
+        );
+    }
+    let cx = x + BUTTON_WIDTH / 2;
+    let cy = BUTTON_Y + BUTTON_HEIGHT / 2;
+    let color = [245, 245, 245];
+    match button {
+        Button::Previous => {
+            fill(pixels, width, (cx - 9, cy - 7, 2, 15), color);
+            triangle(pixels, width, cx + 1, cy, false, color);
+        }
+        Button::Toggle if playing => {
+            fill(pixels, width, (cx - 6, cy - 7, 4, 15), color);
+            fill(pixels, width, (cx + 2, cy - 7, 4, 15), color);
+        }
+        Button::Toggle => triangle(pixels, width, cx, cy, true, color),
+        Button::Next => {
+            triangle(pixels, width, cx - 1, cy, true, color);
+            fill(pixels, width, (cx + 7, cy - 7, 2, 15), color);
+        }
+        _ => {}
+    }
+}
+
+fn triangle(pixels: &mut [u8], width: u16, cx: u16, cy: u16, right: bool, color: [u8; 3]) {
+    for step in 0..8 {
+        let half_height = 7 - step;
+        let x = if right { cx - 4 + step } else { cx + 4 - step };
+        fill(
+            pixels,
+            width,
+            (x, cy - half_height, 1, half_height * 2 + 1),
+            color,
+        );
+    }
+}
+
+fn blit_scrolling_title(pixels: &mut [u8], width: u16, text: &RasterizedText, elapsed: Duration) {
+    let visible_width = usize::from(width - PADDING * 2 - 24);
+    let offset = if text.width > visible_width {
+        (elapsed.as_millis() / 35) as usize % (text.width + SCROLL_GAP)
+    } else {
+        0
+    };
+    for y in 0..text.height.min(20) {
+        for x in 0..visible_width.min(text.width + SCROLL_GAP) {
+            let source_x = (offset + x) % (text.width + SCROLL_GAP);
+            if source_x >= text.width {
+                continue;
+            }
+            let alpha = u16::from(text.alpha[y * text.width + source_x]);
+            let target = ((12 + y) * usize::from(width) + usize::from(PADDING) + x) * 4;
+            for channel in &mut pixels[target..target + 3] {
+                *channel = ((u16::from(*channel) * (255 - alpha) + 210 * alpha) / 255) as u8;
+            }
+        }
     }
 }
 
@@ -748,6 +835,89 @@ fn run_control(command: PlaybackCommand) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_controls_use_icons_and_only_highlight_on_hover() {
+        let mut pixels = [0_u8, 0, 0, 255].repeat(usize::from(WIDTH) * usize::from(HEIGHT));
+        let (_, x) = button_positions(WIDTH)[1];
+        let cx = x + BUTTON_WIDTH / 2;
+        let cy = BUTTON_Y + BUTTON_HEIGHT / 2;
+        let sample = |pixels: &[u8], x: u16, y: u16| -> [u8; 3] {
+            let index = (usize::from(y) * usize::from(WIDTH) + usize::from(x)) * 4;
+            pixels[index..index + 3].try_into().unwrap()
+        };
+        draw_transport(&mut pixels, WIDTH, Button::Toggle, x, false, true);
+        assert_eq!(sample(&pixels, cx - 4, cy), [245, 245, 245]);
+        assert_eq!(sample(&pixels, cx, cy), [0, 0, 0]);
+        assert_eq!(sample(&pixels, x + 1, cy), [0, 0, 0]);
+        draw_transport(&mut pixels, WIDTH, Button::Toggle, x, true, false);
+        assert_eq!(sample(&pixels, cx, cy), [245, 245, 245]);
+        assert_eq!(sample(&pixels, x + 1, cy), [29, 96, 72]);
+    }
+
+    #[test]
+    fn footer_rows_and_slider_hit_targets_remain_separate() {
+        assert!(matches!(
+            button_at((40.0, f64::from(WEB_Y)), WIDTH),
+            Some(Button::Web)
+        ));
+        assert!(matches!(
+            button_at((40.0, f64::from(QUIT_Y)), WIDTH),
+            Some(Button::Quit)
+        ));
+        let row = ProgressRow::new(WIDTH, 40, 40);
+        assert!(row.contains((f64::from(row.track_x + 10), f64::from(PROGRESS_Y))));
+        assert!(!row.contains((f64::from(row.elapsed_x), f64::from(PROGRESS_Y))));
+        assert!(!row.contains((f64::from(row.track_x + 10), f64::from(BUTTON_Y))));
+    }
+
+    #[test]
+    #[ignore = "requires installed fonts; generates offline style previews in /tmp/opencode"]
+    fn render_style_preview() {
+        let line = "A song title - Artist · Playing";
+        let font = load_font(&format!("{line} 0123456789: Start Web Quit"))
+            .expect("installed preview font");
+        let elapsed = rasterize_text(&font, "00:42");
+        let duration = rasterize_text(&font, "03:18");
+        let row = ProgressRow::new(WIDTH, duration.width as u16, duration.width as u16);
+        for (name, status, hovered) in [
+            ("playing", "playing", None),
+            ("paused", "paused", Some(Button::Toggle)),
+        ] {
+            let line = format!(
+                "A song title - Artist · {}",
+                if status == "playing" {
+                    "Playing"
+                } else {
+                    "Paused"
+                }
+            );
+            let title = rasterize_text(&font, &line);
+            let playback = PlaybackSnapshot {
+                line,
+                status: status.into(),
+                position: 42,
+                duration: 198,
+                ..Default::default()
+            };
+            let pixels = render_panel(
+                &font,
+                Locale::En,
+                &playback,
+                &elapsed,
+                &duration,
+                WIDTH,
+                row,
+                hovered,
+                &title,
+                Duration::ZERO,
+            );
+            image::RgbaImage::from_raw(u32::from(WIDTH), u32::from(HEIGHT), pixels)
+                .unwrap()
+                .save(format!("/tmp/opencode/ctlyrics-tray-{name}.png"))
+                .unwrap();
+        }
+    }
 
     fn press() -> PointerEventKind {
         PointerEventKind::Press {
@@ -809,13 +979,13 @@ mod tests {
     fn full_context_menu_has_web_and_quit_targets() {
         let mut panel =
             ControlPanel::new(Locale::En, PlaybackInfo::new(Locale::En), ExitSignal::new());
-        let web = (f64::from(PADDING + 10), f64::from(FOOTER_Y + 10));
+        let web = (f64::from(PADDING + 10), f64::from(WEB_Y + 10));
         panel.handle_pointer(press(), web);
         assert!(matches!(
             panel.handle_pointer(release(), web),
             Some(PanelAction::Web)
         ));
-        let quit = (f64::from(WIDTH - PADDING - 10), f64::from(FOOTER_Y + 10));
+        let quit = (f64::from(WIDTH - PADDING - 10), f64::from(QUIT_Y + 10));
         panel.handle_pointer(press(), quit);
         assert!(matches!(
             panel.handle_pointer(release(), quit),
