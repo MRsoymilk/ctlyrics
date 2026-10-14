@@ -16,7 +16,7 @@ use smithay_client_toolkit::reexports::client::{
 };
 use smithay_client_toolkit::reexports::protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1;
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
+    compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
     delegate_relative_pointer, delegate_seat, delegate_shm, delegate_xdg_shell,
     delegate_xdg_window,
@@ -47,9 +47,13 @@ use smithay_client_toolkit::{
 
 use super::bubble::{
     LyricBubbleContent, LyricOrientation, adjusted_font_size, load_font, load_font_size,
-    render_lyric_bubble, save_font_size,
+    save_font_size,
 };
-use super::{ExitSignal, PlaybackInfo, controls::ControlPanel};
+use super::{
+    ExitSignal, PlaybackInfo,
+    bubble_controls::{self, BubbleControls, BubbleFrame, BubbleLayout, BubbleRect},
+    controls::ControlPanel,
+};
 use crate::i18n::Locale;
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(40);
@@ -265,6 +269,9 @@ pub(super) struct State {
     orientation: LyricOrientation,
     position: Option<(i32, i32)>,
     bubble_size: (u16, u16),
+    bubble_layout: BubbleLayout,
+    bubble_controls: BubbleControls,
+    bubble_input_rects: Vec<BubbleRect>,
     pending_layer_position: Option<(i32, i32)>,
     last_move: Instant,
     drag: Option<DragState>,
@@ -385,6 +392,9 @@ fn initialize(
         orientation: LyricOrientation::Horizontal,
         position: None,
         bubble_size: (80, 42),
+        bubble_layout: BubbleLayout::from_size(84, 76),
+        bubble_controls: BubbleControls::new(playback.clone()),
+        bubble_input_rects: Vec::new(),
         pending_layer_position: None,
         last_move: Instant::now(),
         drag: None,
@@ -473,14 +483,14 @@ impl State {
             .map(|font| LyricBubbleContent::new(font, &self.lyric, self.font_size));
     }
 
-    fn rendered(&self) -> Option<(Vec<u8>, u16, u16)> {
+    fn rendered(&self) -> Option<BubbleFrame> {
         self.content.as_ref().map(|content| {
-            render_lyric_bubble(
+            self.bubble_controls.render(
                 content,
                 self.orientation,
                 self.animation_started.elapsed(),
-                self.screen_size.0,
-                self.screen_size.1,
+                self.screen_size,
+                self.drag.is_some(),
             )
         })
     }
@@ -490,10 +500,12 @@ impl State {
             return;
         }
         let surface = self.compositor.create_surface(qh);
-        let (width, height) = self
+        self.bubble_layout = self
             .rendered()
-            .map(|(_, width, height)| (width, height))
-            .unwrap_or((80, 42));
+            .map(|frame| frame.layout)
+            .unwrap_or(BubbleLayout::from_size(84, 76));
+        let (width, height) = (self.bubble_layout.width, self.bubble_layout.height);
+        self.bubble_input_rects.clear();
         self.bubble_size = (width, height);
         self.configured = false;
         self.buffer = None;
@@ -535,6 +547,8 @@ impl State {
         self.buffer = None;
         self.buffer_size = (0, 0);
         self.drag = None;
+        self.bubble_controls.cancel();
+        self.bubble_input_rects.clear();
         self.pending_layer_position = None;
         self.visible = false;
         self.configured = false;
@@ -546,9 +560,11 @@ impl State {
         let Some(shell) = &self.shell else {
             return;
         };
-        let Some((_, width, height)) = rendered else {
+        let Some(frame) = rendered else {
             return;
         };
+        let (width, height) = (frame.layout.width, frame.layout.height);
+        self.bubble_layout = frame.layout;
         self.bubble_size = (width, height);
         if let ShellSurface::Layer(layer) = shell {
             let position = clamp_position(
@@ -567,9 +583,19 @@ impl State {
     }
 
     fn draw(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
-        let Some((rgba, width, height)) = self.rendered() else {
+        let Some(BubbleFrame {
+            pixels: rgba,
+            layout,
+            expanded,
+        }) = self.rendered()
+        else {
             return Ok(());
         };
+        let (width, height) = (layout.width, layout.height);
+        if self.bubble_size != (width, height) {
+            self.update_size();
+        }
+        self.bubble_layout = layout;
         let Some(surface) = self.shell.as_ref().map(|shell| shell.wl_surface().clone()) else {
             return Ok(());
         };
@@ -578,6 +604,15 @@ impl State {
             self.buffer_size = (width, height);
         }
         let stride = i32::from(width) * 4;
+        // Some compositors retain the current shm buffer until it is replaced.
+        // Waiting for release in that case would prevent the hover state from drawing.
+        if self
+            .buffer
+            .as_ref()
+            .is_some_and(|buffer| self.pool.canvas(buffer).is_none())
+        {
+            self.buffer = None;
+        }
         if self.buffer.is_none() {
             self.buffer = Some(
                 self.pool
@@ -600,6 +635,20 @@ impl State {
         };
         for (source, destination) in rgba.chunks_exact(4).zip(canvas.chunks_exact_mut(4)) {
             destination.copy_from_slice(&[source[2], source[1], source[0], source[3]]);
+        }
+        let rects = layout.input_rects(expanded);
+        if self.bubble_input_rects != rects {
+            let region = Region::new(&self.compositor)?;
+            for rect in &rects {
+                region.add(
+                    i32::from(rect.x),
+                    i32::from(rect.y),
+                    i32::from(rect.width),
+                    i32::from(rect.height),
+                );
+            }
+            surface.set_input_region(Some(region.wl_region()));
+            self.bubble_input_rects = rects;
         }
         surface.damage_buffer(0, 0, i32::from(width), i32::from(height));
         surface.frame(qh, surface.clone());
@@ -860,6 +909,7 @@ impl SeatHandler for State {
             self.drag = None;
             self.pending_layer_position = None;
             self.controls.cancel_drag();
+            self.bubble_controls.cancel();
         }
     }
 
@@ -888,6 +938,7 @@ impl SeatHandler for State {
             self.drag = None;
             self.pending_layer_position = None;
             self.controls.cancel_drag();
+            self.bubble_controls.cancel();
         }
     }
 }
@@ -913,11 +964,27 @@ impl PointerHandler for State {
                 continue;
             }
             match event.kind {
+                PointerEventKind::Enter { .. } => {
+                    self.bubble_controls.enter();
+                    self.dirty = true;
+                }
+                PointerEventKind::Leave { .. } => {
+                    self.bubble_controls.leave();
+                    self.dirty = true;
+                }
                 PointerEventKind::Press {
                     time: _,
                     button,
                     serial,
                 } if button == BTN_LEFT => {
+                    if self
+                        .bubble_controls
+                        .press(event.position, self.bubble_layout)
+                    {
+                        self.dirty = true;
+                        continue;
+                    }
+                    self.bubble_controls.start_lyric_drag(self.bubble_layout);
                     self.drag = Some(DragState::new(
                         event.position,
                         serial,
@@ -925,6 +992,12 @@ impl PointerHandler for State {
                     ));
                 }
                 PointerEventKind::Motion { .. } => {
+                    self.bubble_controls
+                        .motion(event.position, self.bubble_layout);
+                    self.dirty = true;
+                    if self.bubble_controls.pressed() {
+                        continue;
+                    }
                     if events[index + 1..]
                         .iter()
                         .any(|later| matches!(later.kind, PointerEventKind::Motion { .. }))
@@ -955,7 +1028,18 @@ impl PointerHandler for State {
                     }
                 }
                 PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
+                    if self.bubble_controls.pressed() {
+                        if let Some(action) = self
+                            .bubble_controls
+                            .release(event.position, self.bubble_layout)
+                        {
+                            bubble_controls::dispatch(action);
+                        }
+                        self.dirty = true;
+                        continue;
+                    }
                     self.flush_layer_move(true);
+                    self.bubble_controls.finish_lyric_drag();
                     let clicked = self.drag.take().is_some_and(|drag| !drag.started);
                     if clicked {
                         self.hide();
@@ -1042,6 +1126,7 @@ impl LayerShellHandler for State {
             self.shell = None;
             self.drag = None;
             self.pending_layer_position = None;
+            self.bubble_controls.cancel();
             self.layer_shell = None;
             self.configured = false;
             if self.visible {

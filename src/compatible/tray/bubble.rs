@@ -10,7 +10,7 @@ pub(super) const DEFAULT_FONT_SIZE: u16 = 14;
 const MIN_FONT_SIZE: u16 = 10;
 const MAX_FONT_SIZE: u16 = 48;
 const FONT_SIZE_STEP: u16 = 2;
-const PADDING: usize = 14;
+const PADDING: usize = 8;
 const MAX_WIDTH: u16 = 520;
 const SCROLL_GAP: usize = 48;
 
@@ -32,6 +32,22 @@ pub(super) enum LyricOrientation {
 }
 
 impl LyricBubbleContent {
+    #[cfg(test)]
+    pub(super) fn fixture(width: usize, height: usize) -> Self {
+        Self {
+            horizontal: RasterizedText {
+                width,
+                height,
+                alpha: vec![255; width * height],
+            },
+            vertical: RasterizedText {
+                width,
+                height,
+                alpha: vec![255; width * height],
+            },
+        }
+    }
+
     pub(super) fn new(font: &FontVec, text: &str, font_size: u16) -> Self {
         Self {
             horizontal: rasterize_text_at_size(font, text, font_size),
@@ -190,15 +206,15 @@ pub(super) fn render_lyric_bubble(
         LyricOrientation::Horizontal => {
             let limit = usize::from(MAX_WIDTH.min(screen_width.saturating_sub(16))).max(1);
             (
-                (text.width + padding).min(limit).max(limit.min(80)),
-                (text.height + padding).max(42),
+                (text.width + padding).min(limit).max(limit.min(64)),
+                (text.height + padding).max(32),
             )
         }
         LyricOrientation::Vertical => {
             let limit = usize::from(screen_height.saturating_sub(16)).max(1);
             (
-                (text.width + padding).max(42),
-                (text.height + padding).min(limit).max(limit.min(80)),
+                (text.width + padding).max(32),
+                (text.height + padding).min(limit).max(limit.min(64)),
             )
         }
     };
@@ -463,6 +479,7 @@ mod tests {
         };
         let width = 32;
         let height = 31;
+        let top = (usize::from(height) - text.height) / 2;
         let mut pixels = vec![0; usize::from(width) * usize::from(height) * 4];
 
         draw_vertical_lyric(&mut pixels, width, height, &text, Duration::ZERO);
@@ -471,9 +488,9 @@ mod tests {
             let offset = (y * usize::from(width) + x) * 4;
             &pixels[offset..offset + 3]
         };
-        assert_eq!(pixel(15, 14), &[245, 245, 245]);
-        assert_eq!(pixel(16, 16), &[245, 245, 245]);
-        assert_eq!(pixel(16, 14), &[0, 0, 0]);
-        assert_eq!(pixel(15, 16), &[0, 0, 0]);
+        assert_eq!(pixel(15, top), &[245, 245, 245]);
+        assert_eq!(pixel(16, top + 2), &[245, 245, 245]);
+        assert_eq!(pixel(16, top), &[0, 0, 0]);
+        assert_eq!(pixel(15, top + 2), &[0, 0, 0]);
     }
 }
