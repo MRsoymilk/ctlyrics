@@ -4,7 +4,7 @@ use std::sync::{
     mpsc::{self, RecvTimeoutError},
 };
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use ksni::{Icon, MenuItem, Tray, blocking::TrayMethods, menu::StandardItem};
@@ -30,6 +30,17 @@ struct TrayItem {
     scroll_step: usize,
     scroll_active_until: Arc<AtomicU64>,
     lyric_display: LyricDisplaySender,
+}
+
+impl TrayItem {
+    fn tick_menu(&mut self, now: u64) {
+        if now < self.scroll_active_until.load(Ordering::Acquire) {
+            self.scroll_step = self.scroll_step.wrapping_add(1);
+        }
+        // Handle::update rebuilds the menu from the live playback snapshot even
+        // if scrolling is inactive or the host never sends AboutToShow.
+        // Do not update the lyric display here: time changes are not new lyrics.
+    }
 }
 
 impl Tray for TrayItem {
@@ -78,13 +89,6 @@ impl Tray for TrayItem {
             .into(),
             StandardItem {
                 label: progress_label(playback.position, playback.duration),
-                enabled: false,
-                ..Default::default()
-            }
-            .into(),
-            StandardItem {
-                label: tr(self.locale, "tray_controls").to_string(),
-                icon_name: "media-playback-start".to_string(),
                 enabled: matches!(self.lyric_display, LyricDisplaySender::Wayland { .. }),
                 activate: Box::new(|tray: &mut Self| {
                     if let LyricDisplaySender::Wayland { wayland, .. } = &tray.lyric_display {
@@ -311,8 +315,10 @@ impl SniTray {
                     }
                 };
 
+                let mut next_menu_refresh = Instant::now() + SCROLL_INTERVAL;
                 loop {
-                    match command_rx.recv_timeout(SCROLL_INTERVAL) {
+                    let timeout = next_menu_refresh.saturating_duration_since(Instant::now());
+                    match command_rx.recv_timeout(timeout) {
                         Ok(Command::Refresh) => {
                             let _ = handle.update(|item| {
                                 item.scroll_step = 0;
@@ -321,13 +327,12 @@ impl SniTray {
                             });
                         }
                         Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
-                        Err(RecvTimeoutError::Timeout) => {
-                            if unix_millis() < scroll_active_until.load(Ordering::Acquire) {
-                                let _ = handle.update(|item| {
-                                    item.scroll_step = item.scroll_step.wrapping_add(1)
-                                });
-                            }
-                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                    }
+                    if Instant::now() >= next_menu_refresh {
+                        let _ = handle.update(|item| item.tick_menu(unix_millis()));
+                        // Content refresh commands must not restart the progress timer.
+                        next_menu_refresh = Instant::now() + SCROLL_INTERVAL;
                     }
                 }
                 handle.shutdown().wait();
@@ -366,17 +371,19 @@ fn unix_millis() -> u64 {
 }
 
 fn progress_label(position: u64, duration: u64) -> String {
-    const WIDTH: usize = 16;
-    let filled = usize::from(progress_offset(position, duration, WIDTH as u16));
-    let mut bar = String::with_capacity(WIDTH);
-    for index in 0..WIDTH {
+    let elapsed = format_time(position.min(duration));
+    let total = format_time(duration);
+    // Budget the entire row, not a fixed-size bar, so longer time labels use
+    // only the space they need. Native menu padding remains host-controlled.
+    let width = MENU_COLUMNS
+        .saturating_sub(elapsed.len() + total.len() + 4)
+        .max(1);
+    let filled = usize::from(progress_offset(position, duration, width as u16));
+    let mut bar = String::with_capacity(width * 3);
+    for index in 0..width {
         bar.push(if index < filled { '━' } else { '─' });
     }
-    format!(
-        "{}  {bar}  {}",
-        format_time(position),
-        format_time(duration)
-    )
+    format!("{elapsed}  {bar}  {total}")
 }
 
 fn launch_web_from_tray() {
@@ -437,4 +444,108 @@ fn show_notification(lyric: &str) -> Option<NotificationHandle> {
         .show()
         .map_err(|error| tracing::debug!(%error, "lyric notification unavailable"))
         .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_tray() -> (TrayItem, mpsc::Receiver<NotificationCommand>) {
+        let (sender, receiver) = mpsc::channel();
+        let tray = TrayItem {
+            exit: ExitSignal::new(),
+            quit_label: "Quit".into(),
+            icon: Vec::new(),
+            playback: PlaybackInfo::new(Locale::En),
+            locale: Locale::En,
+            scroll_step: 0,
+            scroll_active_until: Arc::new(AtomicU64::new(0)),
+            lyric_display: LyricDisplaySender::Notification(sender),
+        };
+        (tray, receiver)
+    }
+
+    #[test]
+    fn menu_ticks_refresh_progress_without_an_open_callback() {
+        let (mut tray, notifications) = test_tray();
+        tray.playback
+            .update("Song".into(), "Lyric", "playing", 0, 180);
+        let revision = tray.playback.snapshot().revision;
+        assert!(
+            !tray
+                .playback
+                .update("Song".into(), "Lyric", "playing", 60, 180)
+        );
+        assert_eq!(tray.playback.snapshot().revision, revision);
+
+        // No AboutToShow and no content-refresh command: the periodic update
+        // must still publish the current time without restarting lyric animation.
+        tray.tick_menu(10_000);
+        assert_eq!(tray.scroll_step, 0);
+        assert!(matches!(&tray.menu()[1], MenuItem::Standard(item)
+            if item.label == progress_label(60, 180)));
+        assert!(matches!(
+            notifications.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn menu_ticks_keep_updating_time_after_scrolling_expires() {
+        let (mut tray, notifications) = test_tray();
+        tray.scroll_step = 9;
+        tray.scroll_active_until.store(60_000, Ordering::Release);
+        tray.playback
+            .update("Song".into(), "Lyric", "playing", 90, 240);
+        tray.tick_menu(120_000);
+        assert_eq!(tray.scroll_step, 9);
+        assert!(matches!(&tray.menu()[1], MenuItem::Standard(item)
+            if item.label == progress_label(90, 240)));
+        assert!(matches!(
+            notifications.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn active_menu_ticks_advance_marquee_without_resetting_it() {
+        let (mut tray, notifications) = test_tray();
+        tray.scroll_step = 9;
+        tray.scroll_active_until.store(60_000, Ordering::Release);
+        tray.tick_menu(1_000);
+        assert_eq!(tray.scroll_step, 10);
+        assert!(matches!(
+            notifications.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn progress_label_fills_the_text_row_for_short_and_long_tracks() {
+        for (position, duration) in [(0, 0), (30, 180), (7200, 12000)] {
+            let label = progress_label(position, duration);
+            assert_eq!(label.chars().count(), MENU_COLUMNS);
+            assert!(label.starts_with(&format_time(position.min(duration))));
+            assert!(label.ends_with(&format_time(duration)));
+        }
+    }
+
+    #[test]
+    fn progress_label_clamps_position_and_displays_completed_tracks() {
+        let label = progress_label(300, 180);
+        assert!(label.starts_with("03:00"));
+        assert!(!label.contains('─'));
+        assert_eq!(label.chars().count(), MENU_COLUMNS);
+    }
+
+    #[test]
+    fn progress_row_replaces_the_separate_playback_controls_entry() {
+        let (tray, _receiver) = test_tray();
+        let menu = tray.menu();
+        assert_eq!(menu.len(), 8);
+        assert!(menu.iter().all(|item| !matches!(item,
+            MenuItem::Standard(item) if item.label == "Playback controls")));
+        assert!(matches!(&menu[1], MenuItem::Standard(item)
+            if item.label == progress_label(0, 0) && !item.enabled));
+    }
 }
