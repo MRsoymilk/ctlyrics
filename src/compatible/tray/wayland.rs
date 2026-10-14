@@ -10,20 +10,23 @@ use anyhow::{Context, Result, anyhow};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::reexports::client::{
-    Connection, QueueHandle,
+    Connection, Dispatch, QueueHandle, WEnum,
     globals::registry_queue_init,
-    protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
+use smithay_client_toolkit::reexports::protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1;
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
+    compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
-    delegate_seat, delegate_shm, delegate_xdg_shell, delegate_xdg_window,
+    delegate_relative_pointer, delegate_seat, delegate_shm, delegate_xdg_shell,
+    delegate_xdg_window,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
         pointer::{AxisScroll, BTN_LEFT, PointerEvent, PointerEventKind, PointerHandler},
+        relative_pointer::{RelativeMotionEvent, RelativePointerHandler, RelativePointerState},
     },
     shell::{
         WaylandSurface,
@@ -44,19 +47,27 @@ use smithay_client_toolkit::{
 
 use super::bubble::{
     LyricBubbleContent, LyricOrientation, adjusted_font_size, load_font, load_font_size,
-    render_lyric_bubble, save_font_size,
+    save_font_size,
 };
+use super::{
+    ExitSignal, PlaybackInfo,
+    bubble_controls::{self, BubbleControls, BubbleFrame, BubbleLayout, BubbleRect},
+    controls::ControlPanel,
+};
+use crate::i18n::Locale;
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(40);
+const DRAG_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const DRAG_THRESHOLD: f64 = 4.0;
 const DEFAULT_MARGIN: i32 = 16;
 const RENDER_SCREEN_WIDTH: u16 = 1920;
 const RENDER_SCREEN_HEIGHT: u16 = 1080;
 
-enum Command {
+pub(super) enum Command {
     Toggle(String),
     Update(String),
     SetOrientation(LyricOrientation),
+    ShowControls(Option<(i32, i32)>),
     Shutdown,
 }
 
@@ -67,6 +78,22 @@ pub(super) struct WaylandBubbleSender {
 }
 
 impl WaylandBubbleSender {
+    pub(super) fn context_menu(&self, x: i32, y: i32) -> bool {
+        self.send(Command::ShowControls(Some((x, y))))
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_channel() -> (Self, Receiver<Command>) {
+        let (commands, receiver) = mpsc::channel();
+        (
+            Self {
+                commands,
+                alive: Arc::new(AtomicBool::new(true)),
+            },
+            receiver,
+        )
+    }
+
     pub(super) fn toggle(&self, lyric: String) -> bool {
         self.send(Command::Toggle(lyric))
     }
@@ -103,7 +130,7 @@ impl Drop for AliveGuard {
 }
 
 impl WaylandBubble {
-    pub(super) fn start(initial_lyric: String) -> Result<Self> {
+    pub(super) fn start(locale: Locale, playback: PlaybackInfo, exit: ExitSignal) -> Result<Self> {
         let (command_tx, command_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let alive = Arc::new(AtomicBool::new(true));
@@ -112,7 +139,7 @@ impl WaylandBubble {
             .name("ctlyrics-wayland-lyric".to_string())
             .spawn(move || {
                 let _alive = AliveGuard(thread_alive);
-                if let Err(error) = run(initial_lyric, command_rx, ready_tx) {
+                if let Err(error) = run(locale, playback, exit, command_rx, ready_tx) {
                     tracing::debug!(%error, "Wayland lyric window stopped");
                 }
             })
@@ -141,13 +168,13 @@ impl WaylandBubble {
     }
 }
 
-enum ShellSurface {
+pub(super) enum ShellSurface {
     Layer(LayerSurface),
     Xdg(Window),
 }
 
 impl ShellSurface {
-    fn wl_surface(&self) -> &wl_surface::WlSurface {
+    pub(super) fn wl_surface(&self) -> &wl_surface::WlSurface {
         match self {
             Self::Layer(layer) => layer.wl_surface(),
             Self::Xdg(window) => window.wl_surface(),
@@ -161,7 +188,7 @@ impl ShellSurface {
         }
     }
 
-    fn set_size(&self, width: u32, height: u32) {
+    pub(super) fn set_size(&self, width: u32, height: u32) {
         match self {
             Self::Layer(layer) => layer.set_size(width, height),
             Self::Xdg(window) => {
@@ -176,12 +203,50 @@ struct DragState {
     grab: (f64, f64),
     serial: u32,
     started: bool,
+    origin: (i32, i32),
+    displacement: (f64, f64),
 }
 
-struct State {
+impl DragState {
+    fn new(grab: (f64, f64), serial: u32, origin: (i32, i32)) -> Self {
+        Self {
+            grab,
+            serial,
+            started: false,
+            origin,
+            displacement: (0.0, 0.0),
+        }
+    }
+
+    fn relative_motion(
+        &mut self,
+        delta: (f64, f64),
+        bubble_size: (u16, u16),
+        screen_size: (u16, u16),
+    ) -> Option<(i32, i32)> {
+        self.displacement.0 += delta.0;
+        self.displacement.1 += delta.1;
+        if !self.started
+            && self.displacement.0.abs().max(self.displacement.1.abs()) < DRAG_THRESHOLD
+        {
+            return None;
+        }
+        self.started = true;
+        let x = (f64::from(self.origin.0) + self.displacement.0)
+            .clamp(0.0, f64::from(screen_size.0.saturating_sub(bubble_size.0)));
+        let y = (f64::from(self.origin.1) + self.displacement.1)
+            .clamp(0.0, f64::from(screen_size.1.saturating_sub(bubble_size.1)));
+        // Retain fractional motion, but discard overshoot so reversing at an edge is immediate.
+        self.displacement = (x - f64::from(self.origin.0), y - f64::from(self.origin.1));
+        Some((x.round() as i32, y.round() as i32))
+    }
+}
+
+pub(super) struct State {
     registry_state: RegistryState,
     output_state: OutputState,
     seat_state: SeatState,
+    relative_pointer_state: RelativePointerState,
     compositor: CompositorState,
     layer_shell: Option<LayerShell>,
     xdg_shell: Option<XdgShell>,
@@ -191,7 +256,11 @@ struct State {
     buffer_size: (u16, u16),
     shell: Option<ShellSurface>,
     pointer: Option<wl_pointer::WlPointer>,
+    relative_pointer: Option<zwp_relative_pointer_v1::ZwpRelativePointerV1>,
     pointer_seat: Option<wl_seat::WlSeat>,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+    keyboard_seat: Option<wl_seat::WlSeat>,
+    keyboard_surface: Option<wl_surface::WlSurface>,
     active_output: Option<wl_output::WlOutput>,
     screen_size: (u16, u16),
     content: Option<LyricBubbleContent>,
@@ -199,6 +268,12 @@ struct State {
     font_size: u16,
     orientation: LyricOrientation,
     position: Option<(i32, i32)>,
+    bubble_size: (u16, u16),
+    bubble_layout: BubbleLayout,
+    bubble_controls: BubbleControls,
+    bubble_input_rects: Vec<BubbleRect>,
+    pending_layer_position: Option<(i32, i32)>,
+    last_move: Instant,
     drag: Option<DragState>,
     visible: bool,
     configured: bool,
@@ -207,14 +282,17 @@ struct State {
     exit: bool,
     animation_started: Instant,
     last_draw: Instant,
+    controls: ControlPanel,
 }
 
 fn run(
-    initial_lyric: String,
+    locale: Locale,
+    playback: PlaybackInfo,
+    exit: ExitSignal,
     commands: Receiver<Command>,
     ready: mpsc::SyncSender<Result<()>>,
 ) -> Result<()> {
-    let (mut event_loop, qh, mut state) = match initialize(initial_lyric) {
+    let (mut event_loop, qh, mut state) = match initialize(locale, playback, exit) {
         Ok(initialized) => initialized,
         Err(error) => {
             let message = error.to_string();
@@ -236,6 +314,11 @@ fn run(
             }
         }
         event_loop.dispatch(Duration::from_millis(20), &mut state)?;
+        state.flush_layer_move(false);
+        if let Err(error) = state.controls.draw(&mut state.pool, &qh) {
+            tracing::warn!(%error, "Wayland playback control panel failed");
+            state.controls.close();
+        }
         if state.visible
             && state.configured
             && state.frame_ready
@@ -248,8 +331,11 @@ fn run(
 }
 
 fn initialize(
-    initial_lyric: String,
+    locale: Locale,
+    playback: PlaybackInfo,
+    exit: ExitSignal,
 ) -> Result<(EventLoop<'static, State>, QueueHandle<State>, State)> {
+    let initial_lyric = playback.snapshot().lyric;
     let connection = Connection::connect_to_env()?;
     let (globals, event_queue) = registry_queue_init(&connection)?;
     let qh = event_queue.handle();
@@ -258,8 +344,19 @@ fn initialize(
         .insert(event_loop.handle())
         .map_err(|error| anyhow!(error.to_string()))?;
     let compositor = CompositorState::bind(&globals, &qh)?;
-    let layer_shell = LayerShell::bind(&globals, &qh).ok();
+    let mut layer_shell = LayerShell::bind(&globals, &qh).ok();
     let xdg_shell = XdgShell::bind(&globals, &qh).ok();
+    let has_relative_pointer = globals.contents().with_list(|globals| {
+        globals
+            .iter()
+            .any(|global| global.interface == "zwp_relative_pointer_manager_v1")
+    });
+    if layer_shell.is_some() && !has_relative_pointer && xdg_shell.is_some() {
+        tracing::debug!(
+            "relative pointer unavailable; using compositor-managed lyric window dragging"
+        );
+        layer_shell = None;
+    }
     if layer_shell.is_none() && xdg_shell.is_none() {
         return Err(anyhow!("neither layer shell nor xdg shell is available"));
     }
@@ -272,6 +369,7 @@ fn initialize(
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
         seat_state: SeatState::new(&globals, &qh),
+        relative_pointer_state: RelativePointerState::bind(&globals, &qh),
         compositor,
         layer_shell,
         xdg_shell,
@@ -281,7 +379,11 @@ fn initialize(
         buffer_size: (0, 0),
         shell: None,
         pointer: None,
+        relative_pointer: None,
         pointer_seat: None,
+        keyboard: None,
+        keyboard_seat: None,
+        keyboard_surface: None,
         active_output: None,
         screen_size: (RENDER_SCREEN_WIDTH, RENDER_SCREEN_HEIGHT),
         content,
@@ -289,6 +391,12 @@ fn initialize(
         font_size,
         orientation: LyricOrientation::Horizontal,
         position: None,
+        bubble_size: (80, 42),
+        bubble_layout: BubbleLayout::from_size(84, 76),
+        bubble_controls: BubbleControls::new(playback.clone()),
+        bubble_input_rects: Vec::new(),
+        pending_layer_position: None,
+        last_move: Instant::now(),
         drag: None,
         visible: false,
         configured: false,
@@ -297,6 +405,7 @@ fn initialize(
         exit: false,
         animation_started: Instant::now(),
         last_draw: Instant::now(),
+        controls: ControlPanel::new(locale, playback, exit),
     };
     Ok((event_loop, qh, state))
 }
@@ -332,6 +441,38 @@ impl State {
                 self.dirty = true;
                 self.update_size();
             }
+            Command::ShowControls(position) => {
+                let location = position.and_then(|(x, y)| {
+                    self.output_state.outputs().find_map(|output| {
+                        let info = self.output_state.info(&output)?;
+                        let (ox, oy) = info.logical_position?;
+                        let (width, height) = info.logical_size?;
+                        (x >= ox
+                            && y >= oy
+                            && i64::from(x) < i64::from(ox) + i64::from(width)
+                            && i64::from(y) < i64::from(oy) + i64::from(height))
+                        .then_some((output, (x.saturating_sub(ox), y.saturating_sub(oy))))
+                    })
+                });
+                let (output, anchor) = if let Some((output, anchor)) = location {
+                    (Some(output), Some(anchor))
+                } else {
+                    (
+                        self.active_output
+                            .clone()
+                            .or_else(|| self.output_state.outputs().next()),
+                        None,
+                    )
+                };
+                self.controls.show(
+                    &self.compositor,
+                    self.layer_shell.as_ref(),
+                    self.xdg_shell.as_ref(),
+                    anchor,
+                    output.as_ref(),
+                    qh,
+                );
+            }
             Command::Shutdown => self.exit = true,
         }
     }
@@ -342,14 +483,14 @@ impl State {
             .map(|font| LyricBubbleContent::new(font, &self.lyric, self.font_size));
     }
 
-    fn rendered(&self) -> Option<(Vec<u8>, u16, u16)> {
+    fn rendered(&self) -> Option<BubbleFrame> {
         self.content.as_ref().map(|content| {
-            render_lyric_bubble(
+            self.bubble_controls.render(
                 content,
                 self.orientation,
                 self.animation_started.elapsed(),
-                self.screen_size.0,
-                self.screen_size.1,
+                self.screen_size,
+                self.drag.is_some(),
             )
         })
     }
@@ -359,10 +500,13 @@ impl State {
             return;
         }
         let surface = self.compositor.create_surface(qh);
-        let (width, height) = self
+        self.bubble_layout = self
             .rendered()
-            .map(|(_, width, height)| (width, height))
-            .unwrap_or((80, 42));
+            .map(|frame| frame.layout)
+            .unwrap_or(BubbleLayout::from_size(84, 76));
+        let (width, height) = (self.bubble_layout.width, self.bubble_layout.height);
+        self.bubble_input_rects.clear();
+        self.bubble_size = (width, height);
         self.configured = false;
         self.buffer = None;
         self.buffer_size = (0, 0);
@@ -403,6 +547,9 @@ impl State {
         self.buffer = None;
         self.buffer_size = (0, 0);
         self.drag = None;
+        self.bubble_controls.cancel();
+        self.bubble_input_rects.clear();
+        self.pending_layer_position = None;
         self.visible = false;
         self.configured = false;
         self.frame_ready = true;
@@ -413,12 +560,18 @@ impl State {
         let Some(shell) = &self.shell else {
             return;
         };
-        let Some((_, width, height)) = rendered else {
+        let Some(frame) = rendered else {
             return;
         };
+        let (width, height) = (frame.layout.width, frame.layout.height);
+        self.bubble_layout = frame.layout;
+        self.bubble_size = (width, height);
         if let ShellSurface::Layer(layer) = shell {
             let position = clamp_position(
-                self.position.unwrap_or((DEFAULT_MARGIN, DEFAULT_MARGIN)),
+                self.pending_layer_position
+                    .take()
+                    .or(self.position)
+                    .unwrap_or((DEFAULT_MARGIN, DEFAULT_MARGIN)),
                 (width, height),
                 self.screen_size,
             );
@@ -430,9 +583,19 @@ impl State {
     }
 
     fn draw(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
-        let Some((rgba, width, height)) = self.rendered() else {
+        let Some(BubbleFrame {
+            pixels: rgba,
+            layout,
+            expanded,
+        }) = self.rendered()
+        else {
             return Ok(());
         };
+        let (width, height) = (layout.width, layout.height);
+        if self.bubble_size != (width, height) {
+            self.update_size();
+        }
+        self.bubble_layout = layout;
         let Some(surface) = self.shell.as_ref().map(|shell| shell.wl_surface().clone()) else {
             return Ok(());
         };
@@ -441,6 +604,15 @@ impl State {
             self.buffer_size = (width, height);
         }
         let stride = i32::from(width) * 4;
+        // Some compositors retain the current shm buffer until it is replaced.
+        // Waiting for release in that case would prevent the hover state from drawing.
+        if self
+            .buffer
+            .as_ref()
+            .is_some_and(|buffer| self.pool.canvas(buffer).is_none())
+        {
+            self.buffer = None;
+        }
         if self.buffer.is_none() {
             self.buffer = Some(
                 self.pool
@@ -464,6 +636,20 @@ impl State {
         for (source, destination) in rgba.chunks_exact(4).zip(canvas.chunks_exact_mut(4)) {
             destination.copy_from_slice(&[source[2], source[1], source[0], source[3]]);
         }
+        let rects = layout.input_rects(expanded);
+        if self.bubble_input_rects != rects {
+            let region = Region::new(&self.compositor)?;
+            for rect in &rects {
+                region.add(
+                    i32::from(rect.x),
+                    i32::from(rect.y),
+                    i32::from(rect.width),
+                    i32::from(rect.height),
+                );
+            }
+            surface.set_input_region(Some(region.wl_region()));
+            self.bubble_input_rects = rects;
+        }
         surface.damage_buffer(0, 0, i32::from(width), i32::from(height));
         surface.frame(qh, surface.clone());
         buffer.attach_to(&surface)?;
@@ -474,37 +660,24 @@ impl State {
         Ok(())
     }
 
-    fn move_layer(&mut self, pointer_position: (f64, f64)) {
-        let Some(drag) = self.drag.as_mut() else {
-            return;
-        };
-        let delta = (
-            pointer_position.0 - drag.grab.0,
-            pointer_position.1 - drag.grab.1,
-        );
-        if !drag.started && delta.0.abs().max(delta.1.abs()) < DRAG_THRESHOLD {
+    fn flush_layer_move(&mut self, force: bool) {
+        if !force && self.last_move.elapsed() < DRAG_FRAME_INTERVAL {
             return;
         }
-        drag.started = true;
+        let Some(position) = self.pending_layer_position.take() else {
+            return;
+        };
         let Some(ShellSurface::Layer(layer)) = &self.shell else {
             return;
         };
-        let (x, y) = self.position.unwrap_or((DEFAULT_MARGIN, DEFAULT_MARGIN));
-        let size = self
-            .rendered()
-            .map(|(_, width, height)| (width, height))
-            .unwrap_or((80, 42));
-        let position = clamp_position(
-            (
-                (f64::from(x) + delta.0).round() as i32,
-                (f64::from(y) + delta.1).round() as i32,
-            ),
-            size,
-            self.screen_size,
-        );
+        let position = clamp_position(position, self.bubble_size, self.screen_size);
+        if self.position == Some(position) {
+            return;
+        }
         self.position = Some(position);
         layer.set_margin(position.1, 0, 0, position.0);
         layer.commit();
+        self.last_move = Instant::now();
     }
 
     fn pointer_axis(&mut self, vertical: AxisScroll) {
@@ -586,10 +759,18 @@ impl CompositorHandler for State {
         &mut self,
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         _time: u32,
     ) {
-        self.frame_ready = true;
+        if self.controls.owns(surface) {
+            self.controls.frame_ready = true;
+        } else if self
+            .shell
+            .as_ref()
+            .is_some_and(|shell| shell.wl_surface() == surface)
+        {
+            self.frame_ready = true;
+        }
     }
 
     fn surface_enter(
@@ -683,9 +864,17 @@ impl SeatHandler for State {
         seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
+        if capability == Capability::Keyboard && self.keyboard.is_none() {
+            self.keyboard = Some(seat.get_keyboard(qh, ()));
+            self.keyboard_seat = Some(seat.clone());
+        }
         if capability == Capability::Pointer && self.pointer.is_none() {
             match self.seat_state.get_pointer(qh, &seat) {
                 Ok(pointer) => {
+                    self.relative_pointer = self
+                        .relative_pointer_state
+                        .get_relative_pointer(&pointer, qh)
+                        .ok();
                     self.pointer = Some(pointer);
                     self.pointer_seat = Some(seat);
                 }
@@ -701,12 +890,26 @@ impl SeatHandler for State {
         seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
+        if capability == Capability::Keyboard && self.keyboard_seat.as_ref() == Some(&seat) {
+            if let Some(keyboard) = self.keyboard.take() {
+                keyboard.release();
+            }
+            self.keyboard_seat = None;
+            self.keyboard_surface = None;
+            self.controls.close();
+        }
         if capability == Capability::Pointer && self.pointer_seat.as_ref() == Some(&seat) {
+            if let Some(relative_pointer) = self.relative_pointer.take() {
+                relative_pointer.destroy();
+            }
             if let Some(pointer) = self.pointer.take() {
                 pointer.release();
             }
             self.pointer_seat = None;
             self.drag = None;
+            self.pending_layer_position = None;
+            self.controls.cancel_drag();
+            self.bubble_controls.cancel();
         }
     }
 
@@ -716,10 +919,26 @@ impl SeatHandler for State {
         _qh: &QueueHandle<Self>,
         seat: wl_seat::WlSeat,
     ) {
+        if self.keyboard_seat.as_ref() == Some(&seat) {
+            if let Some(keyboard) = self.keyboard.take() {
+                keyboard.release();
+            }
+            self.keyboard_seat = None;
+            self.keyboard_surface = None;
+            self.controls.close();
+        }
         if self.pointer_seat.as_ref() == Some(&seat) {
-            self.pointer = None;
+            if let Some(relative_pointer) = self.relative_pointer.take() {
+                relative_pointer.destroy();
+            }
+            if let Some(pointer) = self.pointer.take() {
+                pointer.release();
+            }
             self.pointer_seat = None;
             self.drag = None;
+            self.pending_layer_position = None;
+            self.controls.cancel_drag();
+            self.bubble_controls.cancel();
         }
     }
 }
@@ -733,6 +952,10 @@ impl PointerHandler for State {
         events: &[PointerEvent],
     ) {
         for (index, event) in events.iter().enumerate() {
+            if self.controls.owns(&event.surface) {
+                self.controls.pointer_event(event);
+                continue;
+            }
             if self
                 .shell
                 .as_ref()
@@ -741,18 +964,40 @@ impl PointerHandler for State {
                 continue;
             }
             match event.kind {
+                PointerEventKind::Enter { .. } => {
+                    self.bubble_controls.enter();
+                    self.dirty = true;
+                }
+                PointerEventKind::Leave { .. } => {
+                    self.bubble_controls.leave();
+                    self.dirty = true;
+                }
                 PointerEventKind::Press {
                     time: _,
                     button,
                     serial,
                 } if button == BTN_LEFT => {
-                    self.drag = Some(DragState {
-                        grab: event.position,
+                    if self
+                        .bubble_controls
+                        .press(event.position, self.bubble_layout)
+                    {
+                        self.dirty = true;
+                        continue;
+                    }
+                    self.bubble_controls.start_lyric_drag(self.bubble_layout);
+                    self.drag = Some(DragState::new(
+                        event.position,
                         serial,
-                        started: false,
-                    });
+                        self.position.unwrap_or((DEFAULT_MARGIN, DEFAULT_MARGIN)),
+                    ));
                 }
                 PointerEventKind::Motion { .. } => {
+                    self.bubble_controls
+                        .motion(event.position, self.bubble_layout);
+                    self.dirty = true;
+                    if self.bubble_controls.pressed() {
+                        continue;
+                    }
                     if events[index + 1..]
                         .iter()
                         .any(|later| matches!(later.kind, PointerEventKind::Motion { .. }))
@@ -774,11 +1019,27 @@ impl PointerHandler for State {
                             window.move_(seat, drag.serial);
                             drag.started = true;
                         }
-                    } else if !is_xdg {
-                        self.move_layer(event.position);
+                    } else if !is_xdg && self.relative_pointer.is_none() && should_start {
+                        // A layer-only compositor without relative motion cannot safely move the
+                        // surface. Still distinguish a drag from a click so release does not hide it.
+                        if let Some(drag) = self.drag.as_mut() {
+                            drag.started = true;
+                        }
                     }
                 }
                 PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
+                    if self.bubble_controls.pressed() {
+                        if let Some(action) = self
+                            .bubble_controls
+                            .release(event.position, self.bubble_layout)
+                        {
+                            bubble_controls::dispatch(action);
+                        }
+                        self.dirty = true;
+                        continue;
+                    }
+                    self.flush_layer_move(true);
+                    self.bubble_controls.finish_lyric_drag();
                     let clicked = self.drag.take().is_some_and(|drag| !drag.started);
                     if clicked {
                         self.hide();
@@ -791,10 +1052,81 @@ impl PointerHandler for State {
     }
 }
 
+// Only the context menu takes keyboard focus. The lyric surface remains non-interactive.
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
+    fn event(
+        state: &mut Self,
+        keyboard: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        _data: &(),
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if state.keyboard.as_ref() != Some(keyboard) {
+            return;
+        }
+        match event {
+            wl_keyboard::Event::Enter { surface, .. } => state.keyboard_surface = Some(surface),
+            wl_keyboard::Event::Leave { surface, .. } => {
+                if state.controls.owns(&surface) {
+                    state.controls.close();
+                }
+                if state.keyboard_surface.as_ref() == Some(&surface) {
+                    state.keyboard_surface = None;
+                }
+            }
+            // Wayland keyboard keycodes use evdev codes; KEY_ESC is 1.
+            wl_keyboard::Event::Key {
+                key: 1,
+                state: WEnum::Value(wl_keyboard::KeyState::Pressed),
+                ..
+            } if state
+                .keyboard_surface
+                .as_ref()
+                .is_some_and(|surface| state.controls.owns(surface)) =>
+            {
+                state.controls.close()
+            }
+            _ => {}
+        }
+    }
+}
+
+impl RelativePointerHandler for State {
+    fn relative_pointer_motion(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        relative_pointer: &zwp_relative_pointer_v1::ZwpRelativePointerV1,
+        pointer: &wl_pointer::WlPointer,
+        event: RelativeMotionEvent,
+    ) {
+        if self.relative_pointer.as_ref() != Some(relative_pointer)
+            || self.pointer.as_ref() != Some(pointer)
+            || !matches!(self.shell, Some(ShellSurface::Layer(_)))
+        {
+            return;
+        }
+        if let Some(drag) = self.drag.as_mut()
+            && let Some(position) =
+                drag.relative_motion(event.delta, self.bubble_size, self.screen_size)
+        {
+            self.pending_layer_position = Some(position);
+        }
+    }
+}
+
 impl LayerShellHandler for State {
     fn closed(&mut self, _connection: &Connection, qh: &QueueHandle<Self>, layer: &LayerSurface) {
+        if matches!(&self.controls.shell, Some(ShellSurface::Layer(current)) if current == layer) {
+            self.controls.close();
+            return;
+        }
         if matches!(&self.shell, Some(ShellSurface::Layer(current)) if current == layer) {
             self.shell = None;
+            self.drag = None;
+            self.pending_layer_position = None;
+            self.bubble_controls.cancel();
             self.layer_shell = None;
             self.configured = false;
             if self.visible {
@@ -808,9 +1140,13 @@ impl LayerShellHandler for State {
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
         layer: &LayerSurface,
-        _configure: LayerSurfaceConfigure,
+        configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
+        if matches!(&self.controls.shell, Some(ShellSurface::Layer(current)) if current == layer) {
+            self.controls.configure_layer(configure.new_size);
+            return;
+        }
         if matches!(&self.shell, Some(ShellSurface::Layer(current)) if current == layer) {
             self.configured = true;
             self.dirty = true;
@@ -825,6 +1161,10 @@ impl WindowHandler for State {
         _qh: &QueueHandle<Self>,
         window: &Window,
     ) {
+        if matches!(&self.controls.shell, Some(ShellSurface::Xdg(current)) if current == window) {
+            self.controls.close();
+            return;
+        }
         if matches!(&self.shell, Some(ShellSurface::Xdg(current)) if current == window) {
             self.hide();
         }
@@ -838,6 +1178,11 @@ impl WindowHandler for State {
         _configure: WindowConfigure,
         _serial: u32,
     ) {
+        if matches!(&self.controls.shell, Some(ShellSurface::Xdg(current)) if current == window) {
+            self.controls.configured = true;
+            self.controls.dirty = true;
+            return;
+        }
         if matches!(&self.shell, Some(ShellSurface::Xdg(current)) if current == window) {
             self.configured = true;
             self.dirty = true;
@@ -866,6 +1211,7 @@ delegate_output!(State);
 delegate_shm!(State);
 delegate_seat!(State);
 delegate_pointer!(State);
+delegate_relative_pointer!(State);
 delegate_layer!(State);
 delegate_xdg_shell!(State);
 delegate_xdg_window!(State);
@@ -873,6 +1219,85 @@ delegate_xdg_window!(State);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_drag_accumulates_motion_without_waiting_for_window_updates() {
+        let mut drag = DragState::new((20.0, 10.0), 1, (100, 100));
+        let size = (100, 80);
+        let screen = (1920, 1080);
+
+        // The compositor may not have applied any window move yet. Each physical delta
+        // must still be added exactly once, independently of surface-local coordinates.
+        assert_eq!(
+            drag.relative_motion((10.0, 5.0), size, screen),
+            Some((110, 105))
+        );
+        assert_eq!(
+            drag.relative_motion((10.0, 5.0), size, screen),
+            Some((120, 110))
+        );
+        assert_eq!(
+            drag.relative_motion((0.0, 0.0), size, screen),
+            Some((120, 110))
+        );
+        assert_eq!(
+            drag.relative_motion((-5.0, -5.0), size, screen),
+            Some((115, 105))
+        );
+    }
+
+    #[test]
+    fn relative_drag_preserves_fractional_motion() {
+        let mut drag = DragState::new((0.0, 0.0), 1, (100, 100));
+        let size = (100, 80);
+        let screen = (1920, 1080);
+        assert_eq!(
+            drag.relative_motion((4.0, 0.0), size, screen),
+            Some((104, 100))
+        );
+        for _ in 0..4 {
+            drag.relative_motion((0.25, 0.25), size, screen);
+        }
+        assert_eq!(
+            drag.relative_motion((0.0, 0.0), size, screen),
+            Some((105, 101))
+        );
+    }
+
+    #[test]
+    fn relative_drag_keeps_small_movements_as_clicks() {
+        let mut drag = DragState::new((20.0, 10.0), 1, (100, 100));
+        let size = (100, 80);
+        let screen = (1920, 1080);
+        assert_eq!(drag.relative_motion((1.5, 0.0), size, screen), None);
+        assert_eq!(drag.relative_motion((1.5, 0.0), size, screen), None);
+        assert!(!drag.started);
+        assert_eq!(
+            drag.relative_motion((1.0, 0.0), size, screen),
+            Some((104, 100))
+        );
+        assert!(drag.started);
+    }
+
+    #[test]
+    fn relative_drag_can_reverse_immediately_at_screen_edges() {
+        let mut drag = DragState::new((0.0, 0.0), 1, (10, 10));
+        let size = (100, 80);
+        let screen = (800, 600);
+        assert_eq!(
+            drag.relative_motion((-100.0, -100.0), size, screen),
+            Some((0, 0))
+        );
+        assert_eq!(drag.relative_motion((1.0, 1.0), size, screen), Some((1, 1)));
+        assert_eq!(
+            drag.relative_motion((1000.0, 1000.0), size, screen),
+            Some((700, 520))
+        );
+        assert_eq!(
+            drag.relative_motion((-1.0, -1.0), size, screen),
+            Some((699, 519))
+        );
+    }
 
     #[test]
     fn dragged_position_is_clamped_to_the_render_area() {

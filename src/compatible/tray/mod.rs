@@ -9,6 +9,12 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 #[cfg(target_os = "linux")]
 mod bubble;
 #[cfg(target_os = "linux")]
+mod bubble_controls;
+#[cfg(target_os = "linux")]
+mod controls;
+#[cfg(target_os = "linux")]
+mod custom_sni;
+#[cfg(target_os = "linux")]
 mod icon;
 #[cfg(target_os = "linux")]
 mod sni;
