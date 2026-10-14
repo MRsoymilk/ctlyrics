@@ -723,6 +723,7 @@ dependencies = [
  "vt100",
  "walkdir",
  "x11rb",
+ "zbus",
 ]
 
 [[package]]

@@ -6,7 +6,7 @@ use anyhow::Result;
 use smithay_client_toolkit::compositor::CompositorState;
 use smithay_client_toolkit::reexports::client::{
     QueueHandle,
-    protocol::{wl_shm, wl_surface},
+    protocol::{wl_output, wl_shm, wl_surface},
 };
 use smithay_client_toolkit::seat::pointer::{BTN_LEFT, PointerEvent, PointerEventKind};
 use smithay_client_toolkit::shell::{
@@ -17,15 +17,17 @@ use smithay_client_toolkit::shell::{
 use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 
 use super::{
-    PlaybackInfo, PlaybackSnapshot,
+    ExitSignal, PlaybackInfo, PlaybackSnapshot,
     bubble::{RasterizedText, font_supports, load_font, rasterize_text},
     wayland::{ShellSurface, State},
 };
 use crate::cmus::{PlaybackCommand, control_cmus, seek_cmus};
 use crate::i18n::{Locale, tr};
+use crate::web::start_and_open;
 
 const WIDTH: u16 = 420;
-const HEIGHT: u16 = 134;
+const HEIGHT: u16 = 182;
+const FOOTER_Y: u16 = 134;
 const PADDING: u16 = 12;
 const TIME_GAP: u16 = 8;
 const PROGRESS_Y: u16 = 56;
@@ -87,6 +89,8 @@ enum Button {
     Previous,
     Toggle,
     Next,
+    Web,
+    Quit,
     Close,
 }
 
@@ -94,6 +98,8 @@ enum PanelAction {
     Seek(u64),
     Control(PlaybackCommand),
     Close,
+    Web,
+    Quit,
 }
 
 pub(super) struct ControlPanel {
@@ -102,6 +108,7 @@ pub(super) struct ControlPanel {
     pub(super) frame_ready: bool,
     pub(super) dirty: bool,
     playback: PlaybackInfo,
+    exit: ExitSignal,
     locale: Locale,
     font: Option<FontVec>,
     time_metrics: Option<(u64, u16)>,
@@ -114,16 +121,21 @@ pub(super) struct ControlPanel {
     pressed: Option<Button>,
     hovered: Option<Button>,
     last_draw: Instant,
+    viewport: (u16, u16),
+    origin: (u16, u16),
+    anchor: Option<(i32, i32)>,
+    painted_rect: Option<((u16, u16), u16)>,
 }
 
 impl ControlPanel {
-    pub(super) fn new(locale: Locale, playback: PlaybackInfo) -> Self {
+    pub(super) fn new(locale: Locale, playback: PlaybackInfo, exit: ExitSignal) -> Self {
         Self {
             shell: None,
             configured: false,
             frame_ready: true,
             dirty: true,
             playback,
+            exit,
             locale,
             font: None,
             time_metrics: None,
@@ -136,6 +148,10 @@ impl ControlPanel {
             pressed: None,
             hovered: None,
             last_draw: Instant::now(),
+            viewport: (WIDTH, HEIGHT),
+            origin: (0, 0),
+            anchor: None,
+            painted_rect: None,
         }
     }
 
@@ -150,13 +166,18 @@ impl ControlPanel {
         compositor: &CompositorState,
         layer_shell: Option<&LayerShell>,
         xdg_shell: Option<&XdgShell>,
+        anchor: Option<(i32, i32)>,
+        output: Option<&wl_output::WlOutput>,
         qh: &QueueHandle<State>,
     ) {
-        // Reopening the panel must not affect the independent lyric surface.
+        // A second right-click dismisses the same menu, not the lyric surface.
         if self.shell.is_some() {
-            self.dirty = true;
+            self.close();
             return;
         }
+        self.anchor = anchor;
+        self.origin = (0, 0);
+        self.viewport = (self.width, HEIGHT);
         let surface = compositor.create_surface(qh);
         if let Some(layer_shell) = layer_shell {
             let layer = layer_shell.create_layer_surface(
@@ -164,18 +185,19 @@ impl ControlPanel {
                 surface,
                 Layer::Overlay,
                 Some("ctlyrics-controls"),
-                None,
+                output,
             );
-            layer.set_anchor(Anchor::TOP | Anchor::RIGHT);
-            layer.set_margin(16, 16, 0, 0);
+            // A transparent full-output surface catches outside clicks like a popup
+            // grab. Only the menu rectangle is painted; the lyric stays visible.
+            layer.set_anchor(Anchor::TOP | Anchor::RIGHT | Anchor::BOTTOM | Anchor::LEFT);
             layer.set_exclusive_zone(-1);
-            layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-            layer.set_size(u32::from(self.width), u32::from(HEIGHT));
+            layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+            layer.set_size(0, 0);
             layer.commit();
             self.shell = Some(ShellSurface::Layer(layer));
         } else if let Some(xdg_shell) = xdg_shell {
             let window = xdg_shell.create_window(surface, WindowDecorations::ServerDefault, qh);
-            window.set_title(tr(self.locale, "tray_controls"));
+            window.set_title("ctlyrics");
             window.set_app_id("ctlyrics-controls");
             window.set_min_size(Some((u32::from(self.width), u32::from(HEIGHT))));
             window.set_max_size(Some((u32::from(self.width), u32::from(HEIGHT))));
@@ -184,6 +206,16 @@ impl ControlPanel {
         }
         self.configured = false;
         self.frame_ready = true;
+        self.dirty = true;
+    }
+
+    pub(super) fn configure_layer(&mut self, size: (u32, u32)) {
+        self.viewport = (
+            size.0.clamp(u32::from(self.width), u32::from(u16::MAX)) as u16,
+            size.1.clamp(u32::from(HEIGHT), u32::from(u16::MAX)) as u16,
+        );
+        self.origin = menu_origin(self.anchor, self.viewport, (self.width, HEIGHT));
+        self.configured = true;
         self.dirty = true;
     }
 
@@ -200,11 +232,16 @@ impl ControlPanel {
         self.shell = None;
         self.buffer = None;
         self.buffer_size = (0, 0);
+        self.painted_rect = None;
         self.configured = false;
     }
 
     pub(super) fn pointer_event(&mut self, event: &PointerEvent) {
-        match self.handle_pointer(event.kind.clone(), event.position) {
+        let position = (
+            event.position.0 - f64::from(self.origin.0),
+            event.position.1 - f64::from(self.origin.1),
+        );
+        match self.handle_pointer(event.kind.clone(), position) {
             Some(PanelAction::Seek(position)) => {
                 // Never block Wayland dispatch on a remote seek; submit once on release.
                 thread::spawn(move || {
@@ -215,6 +252,18 @@ impl ControlPanel {
             }
             Some(PanelAction::Control(command)) => run_control(command),
             Some(PanelAction::Close) => self.close(),
+            Some(PanelAction::Web) => {
+                self.close();
+                thread::spawn(|| {
+                    if let Err(error) = start_and_open() {
+                        tracing::warn!(%error, "tray Web launch failed");
+                    }
+                });
+            }
+            Some(PanelAction::Quit) => {
+                self.close();
+                self.exit.request();
+            }
             None => {}
         }
     }
@@ -224,6 +273,15 @@ impl ControlPanel {
         kind: PointerEventKind,
         position: (f64, f64),
     ) -> Option<PanelAction> {
+        if matches!(kind, PointerEventKind::Press { .. })
+            && (position.0 < 0.0
+                || position.0 >= f64::from(self.width)
+                || position.1 < 0.0
+                || position.1 >= f64::from(HEIGHT))
+        {
+            self.cancel_drag();
+            return Some(PanelAction::Close);
+        }
         let playback = self.playback.snapshot();
         if self
             .drag
@@ -270,6 +328,8 @@ impl ControlPanel {
                         Button::Previous => PanelAction::Control(PlaybackCommand::Previous),
                         Button::Toggle => PanelAction::Control(PlaybackCommand::TogglePause),
                         Button::Next => PanelAction::Control(PlaybackCommand::Next),
+                        Button::Web => PanelAction::Web,
+                        Button::Quit => PanelAction::Quit,
                     });
                 }
             }
@@ -309,12 +369,14 @@ impl ControlPanel {
             playback.position = seek.position;
         }
         let sample = format!(
-            "{} 0123456789: X {} {} {} {}",
+            "{} 0123456789: X {} {} {} {} {} {}",
             playback.line,
             tr(self.locale, "tray_previous"),
             tr(self.locale, "tray_pause"),
             tr(self.locale, "tray_play"),
-            tr(self.locale, "tray_next")
+            tr(self.locale, "tray_next"),
+            tr(self.locale, "tray_web"),
+            tr(self.locale, "tray_quit")
         );
         if self
             .font
@@ -351,6 +413,11 @@ impl ControlPanel {
         };
         self.width =
             WIDTH.max(elapsed_width + duration.width as u16 + 2 * PADDING + 2 * TIME_GAP + 80);
+        if matches!(self.shell, Some(ShellSurface::Layer(_))) {
+            self.origin = menu_origin(self.anchor, self.viewport, (self.width, HEIGHT));
+        } else {
+            self.viewport = (self.width, HEIGHT);
+        }
         self.row = ProgressRow::new(self.width, elapsed_width, duration.width as u16);
         let pixels = render_panel(
             font,
@@ -364,17 +431,20 @@ impl ControlPanel {
         );
         let shell = self.shell.as_ref().expect("visible control panel");
         let surface = shell.wl_surface().clone();
-        if self.buffer_size != (self.width, HEIGHT) {
-            shell.set_size(u32::from(self.width), u32::from(HEIGHT));
+        if self.buffer_size != self.viewport {
+            if matches!(shell, ShellSurface::Xdg(_)) {
+                shell.set_size(u32::from(self.width), u32::from(HEIGHT));
+            }
             self.buffer = None;
-            self.buffer_size = (self.width, HEIGHT);
+            self.buffer_size = self.viewport;
+            self.painted_rect = None;
         }
         if self.buffer.is_none() {
             self.buffer = Some(
                 pool.create_buffer(
-                    i32::from(self.width),
-                    i32::from(HEIGHT),
-                    i32::from(self.width) * 4,
+                    i32::from(self.viewport.0),
+                    i32::from(self.viewport.1),
+                    i32::from(self.viewport.0) * 4,
                     wl_shm::Format::Argb8888,
                 )?
                 .0,
@@ -388,10 +458,26 @@ impl ControlPanel {
             self.dirty = true;
             return Ok(());
         };
-        for (source, destination) in pixels.chunks_exact(4).zip(canvas.chunks_exact_mut(4)) {
-            destination.copy_from_slice(&[source[2], source[1], source[0], source[3]]);
+        let clear_backdrop = self.painted_rect != Some((self.origin, self.width));
+        paint_menu(
+            canvas,
+            &pixels,
+            self.viewport,
+            self.origin,
+            self.width,
+            clear_backdrop,
+        );
+        if clear_backdrop {
+            surface.damage_buffer(0, 0, i32::from(self.viewport.0), i32::from(self.viewport.1));
+        } else {
+            surface.damage_buffer(
+                i32::from(self.origin.0),
+                i32::from(self.origin.1),
+                i32::from(self.width),
+                i32::from(HEIGHT),
+            );
         }
-        surface.damage_buffer(0, 0, i32::from(self.width), i32::from(HEIGHT));
+        self.painted_rect = Some((self.origin, self.width));
         surface.frame(qh, surface.clone());
         buffer.attach_to(&surface)?;
         surface.commit();
@@ -402,11 +488,45 @@ impl ControlPanel {
     }
 }
 
+fn paint_menu(
+    canvas: &mut [u8],
+    pixels: &[u8],
+    viewport: (u16, u16),
+    origin: (u16, u16),
+    menu_width: u16,
+    clear: bool,
+) {
+    if clear {
+        canvas.fill(0);
+    }
+    let width = usize::from(menu_width.min(viewport.0.saturating_sub(origin.0)));
+    for y in 0..usize::from(HEIGHT.min(viewport.1.saturating_sub(origin.1))) {
+        let start =
+            ((usize::from(origin.1) + y) * usize::from(viewport.0) + usize::from(origin.0)) * 4;
+        let row = &pixels[y * usize::from(menu_width) * 4..][..width * 4];
+        for (source, destination) in row
+            .chunks_exact(4)
+            .zip(canvas[start..start + width * 4].chunks_exact_mut(4))
+        {
+            destination.copy_from_slice(&[source[2], source[1], source[0], source[3]]);
+        }
+    }
+}
+
 fn button_at(position: (f64, f64), width: u16) -> Option<Button> {
     if (f64::from(width - 36)..f64::from(width - PADDING)).contains(&position.0)
         && (8.0..36.0).contains(&position.1)
     {
         return Some(Button::Close);
+    }
+    if (f64::from(FOOTER_Y)..f64::from(FOOTER_Y + BUTTON_HEIGHT)).contains(&position.1) {
+        let half = (width - PADDING * 3) / 2;
+        if (f64::from(PADDING)..f64::from(PADDING + half)).contains(&position.0) {
+            return Some(Button::Web);
+        }
+        if (f64::from(PADDING * 2 + half)..f64::from(width - PADDING)).contains(&position.0) {
+            return Some(Button::Quit);
+        }
     }
     if !(f64::from(BUTTON_Y)..f64::from(BUTTON_Y + BUTTON_HEIGHT)).contains(&position.1) {
         return None;
@@ -517,7 +637,7 @@ fn render_panel(
             Button::Toggle if playback.status == "playing" => "tray_pause",
             Button::Toggle => "tray_play",
             Button::Next => "tray_next",
-            Button::Close => unreachable!(),
+            Button::Close | Button::Web | Button::Quit => unreachable!(),
         };
         let text = rasterize_text(font, tr(locale, label));
         let offset = BUTTON_WIDTH.saturating_sub(text.width as u16) / 2;
@@ -530,7 +650,52 @@ fn render_panel(
             x + BUTTON_WIDTH,
         );
     }
+    let half = (width - PADDING * 3) / 2;
+    for (button, x, label) in [
+        (Button::Web, PADDING, "tray_web"),
+        (Button::Quit, PADDING * 2 + half, "tray_quit"),
+    ] {
+        fill(
+            &mut pixels,
+            width,
+            (x, FOOTER_Y, half, BUTTON_HEIGHT),
+            if hovered == Some(button) {
+                [29, 96, 72]
+            } else {
+                [44, 44, 52]
+            },
+        );
+        let text = rasterize_text(font, tr(locale, label));
+        blit(
+            &mut pixels,
+            width,
+            &text,
+            x + half.saturating_sub(text.width as u16) / 2,
+            FOOTER_Y + 8,
+            x + half,
+        );
+    }
     pixels
+}
+
+fn menu_origin(anchor: Option<(i32, i32)>, viewport: (u16, u16), size: (u16, u16)) -> (u16, u16) {
+    let max_x = viewport.0.saturating_sub(size.0);
+    let max_y = viewport.1.saturating_sub(size.1);
+    match anchor {
+        Some((x, y)) if x != 0 || y != 0 => {
+            let below = y.saturating_add(4);
+            let y = if below > i32::from(max_y) {
+                y.saturating_sub(i32::from(size.1) + 4)
+            } else {
+                below
+            };
+            (
+                x.clamp(0, i32::from(max_x)) as u16,
+                y.clamp(0, i32::from(max_y)) as u16,
+            )
+        }
+        _ => (max_x.saturating_sub(16), max_y.min(16)),
+    }
 }
 
 fn fill(pixels: &mut [u8], width: u16, rect: (u16, u16, u16, u16), color: [u8; 3]) {
@@ -592,6 +757,72 @@ mod tests {
         }
     }
 
+    #[test]
+    fn menu_backdrop_is_transparent_and_only_the_menu_is_painted() {
+        let viewport = (800, 600);
+        let origin = (100, 100);
+        let pixels: Vec<_> = [10, 20, 30, 255].repeat(usize::from(WIDTH) * usize::from(HEIGHT));
+        let mut canvas = vec![255; 800 * 600 * 4];
+        paint_menu(&mut canvas, &pixels, viewport, origin, WIDTH, true);
+        assert_eq!(&canvas[..4], &[0, 0, 0, 0]);
+        let inside = (100 * 800 + 100) * 4;
+        assert_eq!(&canvas[inside..inside + 4], &[30, 20, 10, 255]);
+        let outside = (100 * 800 + 99) * 4;
+        assert_eq!(&canvas[outside..outside + 4], &[0, 0, 0, 0]);
+        paint_menu(&mut canvas, &pixels, viewport, origin, WIDTH, false);
+        assert_eq!(&canvas[outside..outside + 4], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn clicking_outside_dismisses_the_menu_without_seeking() {
+        let playback = PlaybackInfo::new(Locale::En);
+        playback.update("Song".into(), "Lyric", "playing", 20, 200);
+        let mut panel = ControlPanel::new(Locale::En, playback, ExitSignal::new());
+        panel.handle_pointer(
+            press(),
+            (f64::from(panel.row.track_x), f64::from(PROGRESS_Y)),
+        );
+        assert!(matches!(
+            panel.handle_pointer(press(), (-1.0, f64::from(PROGRESS_Y))),
+            Some(PanelAction::Close)
+        ));
+        assert!(panel.drag.is_none());
+    }
+
+    #[test]
+    fn context_menu_position_is_clamped_and_flips_above_a_bottom_tray() {
+        assert_eq!(
+            menu_origin(Some((1900, 20)), (1920, 1080), (WIDTH, HEIGHT)),
+            (1920 - WIDTH, 24)
+        );
+        assert_eq!(
+            menu_origin(Some((100, 1060)), (1920, 1080), (WIDTH, HEIGHT)),
+            (100, 1060 - HEIGHT - 4)
+        );
+        assert_eq!(
+            menu_origin(Some((-100, -100)), (1920, 1080), (WIDTH, HEIGHT)),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn full_context_menu_has_web_and_quit_targets() {
+        let mut panel =
+            ControlPanel::new(Locale::En, PlaybackInfo::new(Locale::En), ExitSignal::new());
+        let web = (f64::from(PADDING + 10), f64::from(FOOTER_Y + 10));
+        panel.handle_pointer(press(), web);
+        assert!(matches!(
+            panel.handle_pointer(release(), web),
+            Some(PanelAction::Web)
+        ));
+        let quit = (f64::from(WIDTH - PADDING - 10), f64::from(FOOTER_Y + 10));
+        panel.handle_pointer(press(), quit);
+        assert!(matches!(
+            panel.handle_pointer(release(), quit),
+            Some(PanelAction::Quit)
+        ));
+    }
+
     fn release() -> PointerEventKind {
         PointerEventKind::Release {
             time: 2,
@@ -604,31 +835,42 @@ mod tests {
     fn drag_previews_without_seeking_until_release() {
         let playback = PlaybackInfo::new(Locale::En);
         playback.update("Song".into(), "Lyric", "playing", 20, 200);
-        let mut panel = ControlPanel::new(Locale::En, playback);
+        let mut panel = ControlPanel::new(Locale::En, playback, ExitSignal::new());
         let start = f64::from(panel.row.track_x);
         let middle = start + f64::from(panel.row.track_width) / 2.0;
-        assert!(panel.handle_pointer(press(), (start, 56.0)).is_none());
         assert!(
             panel
-                .handle_pointer(PointerEventKind::Motion { time: 2 }, (middle, 56.0))
+                .handle_pointer(press(), (start, f64::from(PROGRESS_Y)))
+                .is_none()
+        );
+        assert!(
+            panel
+                .handle_pointer(
+                    PointerEventKind::Motion { time: 2 },
+                    (middle, f64::from(PROGRESS_Y))
+                )
                 .is_none()
         );
         assert_eq!(panel.drag.as_ref().unwrap().position, 100);
         assert!(matches!(
-            panel.handle_pointer(release(), (middle, 56.0)),
+            panel.handle_pointer(release(), (middle, f64::from(PROGRESS_Y))),
             Some(PanelAction::Seek(100))
         ));
         assert!(panel.drag.is_none());
         assert_eq!(panel.preview.as_ref().unwrap().0.position, 100);
-        assert!(panel.handle_pointer(release(), (middle, 56.0)).is_none());
+        assert!(
+            panel
+                .handle_pointer(release(), (middle, f64::from(PROGRESS_Y)))
+                .is_none()
+        );
     }
 
     #[test]
     fn changing_tracks_during_drag_does_not_seek_the_new_track() {
         let playback = PlaybackInfo::new(Locale::En);
         playback.update("Song".into(), "Lyric", "playing", 20, 200);
-        let mut panel = ControlPanel::new(Locale::En, playback.clone());
-        let position = (f64::from(panel.row.track_x + 30), 56.0);
+        let mut panel = ControlPanel::new(Locale::En, playback.clone(), ExitSignal::new());
+        let position = (f64::from(panel.row.track_x + 30), f64::from(PROGRESS_Y));
         panel.handle_pointer(press(), position);
         playback.update("Other song".into(), "Other lyric", "playing", 0, 180);
         assert!(panel.handle_pointer(release(), position).is_none());
@@ -639,8 +881,8 @@ mod tests {
     fn closing_cancels_an_unfinished_drag() {
         let playback = PlaybackInfo::new(Locale::En);
         playback.update("Song".into(), "Lyric", "playing", 20, 200);
-        let mut panel = ControlPanel::new(Locale::En, playback);
-        let position = (f64::from(panel.row.track_x + 30), 56.0);
+        let mut panel = ControlPanel::new(Locale::En, playback, ExitSignal::new());
+        let position = (f64::from(panel.row.track_x + 30), f64::from(PROGRESS_Y));
         panel.handle_pointer(press(), position);
         panel.close();
         assert!(panel.handle_pointer(release(), position).is_none());
@@ -676,10 +918,19 @@ mod tests {
 
     #[test]
     fn unknown_duration_does_not_start_a_seek() {
-        let mut panel = ControlPanel::new(Locale::En, PlaybackInfo::new(Locale::En));
+        let mut panel =
+            ControlPanel::new(Locale::En, PlaybackInfo::new(Locale::En), ExitSignal::new());
         assert_eq!(panel.row.seek_position(200.0, 0), 0);
-        assert!(panel.handle_pointer(press(), (200.0, 56.0)).is_none());
-        assert!(panel.handle_pointer(release(), (200.0, 56.0)).is_none());
+        assert!(
+            panel
+                .handle_pointer(press(), (200.0, f64::from(PROGRESS_Y)))
+                .is_none()
+        );
+        assert!(
+            panel
+                .handle_pointer(release(), (200.0, f64::from(PROGRESS_Y)))
+                .is_none()
+        );
         assert!(panel.drag.is_none());
     }
 

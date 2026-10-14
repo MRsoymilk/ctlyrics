@@ -10,9 +10,9 @@ use anyhow::{Context, Result, anyhow};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::reexports::client::{
-    Connection, QueueHandle,
+    Connection, Dispatch, QueueHandle, WEnum,
     globals::registry_queue_init,
-    protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
 use smithay_client_toolkit::reexports::protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1;
 use smithay_client_toolkit::{
@@ -49,7 +49,7 @@ use super::bubble::{
     LyricBubbleContent, LyricOrientation, adjusted_font_size, load_font, load_font_size,
     render_lyric_bubble, save_font_size,
 };
-use super::{PlaybackInfo, controls::ControlPanel};
+use super::{ExitSignal, PlaybackInfo, controls::ControlPanel};
 use crate::i18n::Locale;
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(40);
@@ -59,11 +59,11 @@ const DEFAULT_MARGIN: i32 = 16;
 const RENDER_SCREEN_WIDTH: u16 = 1920;
 const RENDER_SCREEN_HEIGHT: u16 = 1080;
 
-enum Command {
+pub(super) enum Command {
     Toggle(String),
     Update(String),
     SetOrientation(LyricOrientation),
-    ShowControls,
+    ShowControls(Option<(i32, i32)>),
     Shutdown,
 }
 
@@ -74,8 +74,20 @@ pub(super) struct WaylandBubbleSender {
 }
 
 impl WaylandBubbleSender {
-    pub(super) fn show_controls(&self) -> bool {
-        self.send(Command::ShowControls)
+    pub(super) fn context_menu(&self, x: i32, y: i32) -> bool {
+        self.send(Command::ShowControls(Some((x, y))))
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_channel() -> (Self, Receiver<Command>) {
+        let (commands, receiver) = mpsc::channel();
+        (
+            Self {
+                commands,
+                alive: Arc::new(AtomicBool::new(true)),
+            },
+            receiver,
+        )
     }
 
     pub(super) fn toggle(&self, lyric: String) -> bool {
@@ -114,7 +126,7 @@ impl Drop for AliveGuard {
 }
 
 impl WaylandBubble {
-    pub(super) fn start(locale: Locale, playback: PlaybackInfo) -> Result<Self> {
+    pub(super) fn start(locale: Locale, playback: PlaybackInfo, exit: ExitSignal) -> Result<Self> {
         let (command_tx, command_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let alive = Arc::new(AtomicBool::new(true));
@@ -123,7 +135,7 @@ impl WaylandBubble {
             .name("ctlyrics-wayland-lyric".to_string())
             .spawn(move || {
                 let _alive = AliveGuard(thread_alive);
-                if let Err(error) = run(locale, playback, command_rx, ready_tx) {
+                if let Err(error) = run(locale, playback, exit, command_rx, ready_tx) {
                     tracing::debug!(%error, "Wayland lyric window stopped");
                 }
             })
@@ -242,6 +254,9 @@ pub(super) struct State {
     pointer: Option<wl_pointer::WlPointer>,
     relative_pointer: Option<zwp_relative_pointer_v1::ZwpRelativePointerV1>,
     pointer_seat: Option<wl_seat::WlSeat>,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+    keyboard_seat: Option<wl_seat::WlSeat>,
+    keyboard_surface: Option<wl_surface::WlSurface>,
     active_output: Option<wl_output::WlOutput>,
     screen_size: (u16, u16),
     content: Option<LyricBubbleContent>,
@@ -266,10 +281,11 @@ pub(super) struct State {
 fn run(
     locale: Locale,
     playback: PlaybackInfo,
+    exit: ExitSignal,
     commands: Receiver<Command>,
     ready: mpsc::SyncSender<Result<()>>,
 ) -> Result<()> {
-    let (mut event_loop, qh, mut state) = match initialize(locale, playback) {
+    let (mut event_loop, qh, mut state) = match initialize(locale, playback, exit) {
         Ok(initialized) => initialized,
         Err(error) => {
             let message = error.to_string();
@@ -310,6 +326,7 @@ fn run(
 fn initialize(
     locale: Locale,
     playback: PlaybackInfo,
+    exit: ExitSignal,
 ) -> Result<(EventLoop<'static, State>, QueueHandle<State>, State)> {
     let initial_lyric = playback.snapshot().lyric;
     let connection = Connection::connect_to_env()?;
@@ -357,6 +374,9 @@ fn initialize(
         pointer: None,
         relative_pointer: None,
         pointer_seat: None,
+        keyboard: None,
+        keyboard_seat: None,
+        keyboard_surface: None,
         active_output: None,
         screen_size: (RENDER_SCREEN_WIDTH, RENDER_SCREEN_HEIGHT),
         content,
@@ -375,7 +395,7 @@ fn initialize(
         exit: false,
         animation_started: Instant::now(),
         last_draw: Instant::now(),
-        controls: ControlPanel::new(locale, playback),
+        controls: ControlPanel::new(locale, playback, exit),
     };
     Ok((event_loop, qh, state))
 }
@@ -411,12 +431,38 @@ impl State {
                 self.dirty = true;
                 self.update_size();
             }
-            Command::ShowControls => self.controls.show(
-                &self.compositor,
-                self.layer_shell.as_ref(),
-                self.xdg_shell.as_ref(),
-                qh,
-            ),
+            Command::ShowControls(position) => {
+                let location = position.and_then(|(x, y)| {
+                    self.output_state.outputs().find_map(|output| {
+                        let info = self.output_state.info(&output)?;
+                        let (ox, oy) = info.logical_position?;
+                        let (width, height) = info.logical_size?;
+                        (x >= ox
+                            && y >= oy
+                            && i64::from(x) < i64::from(ox) + i64::from(width)
+                            && i64::from(y) < i64::from(oy) + i64::from(height))
+                        .then_some((output, (x.saturating_sub(ox), y.saturating_sub(oy))))
+                    })
+                });
+                let (output, anchor) = if let Some((output, anchor)) = location {
+                    (Some(output), Some(anchor))
+                } else {
+                    (
+                        self.active_output
+                            .clone()
+                            .or_else(|| self.output_state.outputs().next()),
+                        None,
+                    )
+                };
+                self.controls.show(
+                    &self.compositor,
+                    self.layer_shell.as_ref(),
+                    self.xdg_shell.as_ref(),
+                    anchor,
+                    output.as_ref(),
+                    qh,
+                );
+            }
             Command::Shutdown => self.exit = true,
         }
     }
@@ -769,6 +815,10 @@ impl SeatHandler for State {
         seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
+        if capability == Capability::Keyboard && self.keyboard.is_none() {
+            self.keyboard = Some(seat.get_keyboard(qh, ()));
+            self.keyboard_seat = Some(seat.clone());
+        }
         if capability == Capability::Pointer && self.pointer.is_none() {
             match self.seat_state.get_pointer(qh, &seat) {
                 Ok(pointer) => {
@@ -791,6 +841,14 @@ impl SeatHandler for State {
         seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
+        if capability == Capability::Keyboard && self.keyboard_seat.as_ref() == Some(&seat) {
+            if let Some(keyboard) = self.keyboard.take() {
+                keyboard.release();
+            }
+            self.keyboard_seat = None;
+            self.keyboard_surface = None;
+            self.controls.close();
+        }
         if capability == Capability::Pointer && self.pointer_seat.as_ref() == Some(&seat) {
             if let Some(relative_pointer) = self.relative_pointer.take() {
                 relative_pointer.destroy();
@@ -811,6 +869,14 @@ impl SeatHandler for State {
         _qh: &QueueHandle<Self>,
         seat: wl_seat::WlSeat,
     ) {
+        if self.keyboard_seat.as_ref() == Some(&seat) {
+            if let Some(keyboard) = self.keyboard.take() {
+                keyboard.release();
+            }
+            self.keyboard_seat = None;
+            self.keyboard_surface = None;
+            self.controls.close();
+        }
         if self.pointer_seat.as_ref() == Some(&seat) {
             if let Some(relative_pointer) = self.relative_pointer.take() {
                 relative_pointer.destroy();
@@ -902,6 +968,46 @@ impl PointerHandler for State {
     }
 }
 
+// Only the context menu takes keyboard focus. The lyric surface remains non-interactive.
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
+    fn event(
+        state: &mut Self,
+        keyboard: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        _data: &(),
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if state.keyboard.as_ref() != Some(keyboard) {
+            return;
+        }
+        match event {
+            wl_keyboard::Event::Enter { surface, .. } => state.keyboard_surface = Some(surface),
+            wl_keyboard::Event::Leave { surface, .. } => {
+                if state.controls.owns(&surface) {
+                    state.controls.close();
+                }
+                if state.keyboard_surface.as_ref() == Some(&surface) {
+                    state.keyboard_surface = None;
+                }
+            }
+            // Wayland keyboard keycodes use evdev codes; KEY_ESC is 1.
+            wl_keyboard::Event::Key {
+                key: 1,
+                state: WEnum::Value(wl_keyboard::KeyState::Pressed),
+                ..
+            } if state
+                .keyboard_surface
+                .as_ref()
+                .is_some_and(|surface| state.controls.owns(surface)) =>
+            {
+                state.controls.close()
+            }
+            _ => {}
+        }
+    }
+}
+
 impl RelativePointerHandler for State {
     fn relative_pointer_motion(
         &mut self,
@@ -949,12 +1055,11 @@ impl LayerShellHandler for State {
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
         layer: &LayerSurface,
-        _configure: LayerSurfaceConfigure,
+        configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
         if matches!(&self.controls.shell, Some(ShellSurface::Layer(current)) if current == layer) {
-            self.controls.configured = true;
-            self.controls.dirty = true;
+            self.controls.configure_layer(configure.new_size);
             return;
         }
         if matches!(&self.shell, Some(ShellSurface::Layer(current)) if current == layer) {

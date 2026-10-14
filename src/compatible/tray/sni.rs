@@ -89,12 +89,7 @@ impl Tray for TrayItem {
             .into(),
             StandardItem {
                 label: progress_label(playback.position, playback.duration),
-                enabled: matches!(self.lyric_display, LyricDisplaySender::Wayland { .. }),
-                activate: Box::new(|tray: &mut Self| {
-                    if let LyricDisplaySender::Wayland { wayland, .. } = &tray.lyric_display {
-                        let _ = wayland.show_controls();
-                    }
-                }),
+                enabled: false,
                 ..Default::default()
             }
             .into(),
@@ -156,7 +151,7 @@ pub struct SniTray {
     lyric_display: Option<LyricDisplay>,
 }
 
-enum Command {
+pub(super) enum Command {
     Refresh,
     Shutdown,
 }
@@ -223,8 +218,8 @@ enum LyricDisplay {
 }
 
 impl LyricDisplay {
-    fn start(locale: Locale, playback: PlaybackInfo) -> Result<Self> {
-        match WaylandBubble::start(locale, playback) {
+    fn start(locale: Locale, playback: PlaybackInfo, exit: ExitSignal) -> Result<Self> {
+        match WaylandBubble::start(locale, playback, exit) {
             Ok(bubble) => {
                 tracing::info!("using Wayland lyric window");
                 let (fallback_sender, fallback_thread) = start_notification_thread()?;
@@ -286,8 +281,24 @@ fn start_notification_thread() -> Result<(mpsc::Sender<NotificationCommand>, Joi
 
 impl SniTray {
     pub fn start(locale: Locale, exit: ExitSignal, playback: PlaybackInfo) -> Result<Self> {
-        let lyric_display = LyricDisplay::start(locale, playback.clone())?;
+        let lyric_display = LyricDisplay::start(locale, playback.clone(), exit.clone())?;
         let lyric_display_sender = lyric_display.sender();
+        if let LyricDisplaySender::Wayland { wayland, .. } = &lyric_display_sender {
+            match super::custom_sni::start(playback, wayland.clone()) {
+                Ok((commands, thread)) => {
+                    tracing::info!("using self-rendered Wayland tray context menu");
+                    return Ok(Self {
+                        commands,
+                        thread: Some(thread),
+                        lyric_display: Some(lyric_display),
+                    });
+                }
+                Err(error) => {
+                    lyric_display.shutdown();
+                    return Err(error);
+                }
+            }
+        }
         let scroll_active_until = Arc::new(AtomicU64::new(0));
         let item = TrayItem {
             exit,

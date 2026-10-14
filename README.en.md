@@ -128,11 +128,14 @@ The tools invoke the host's `python3` directly without checking whether it is in
 
 On Linux, the tray prefers StatusNotifierItem for KDE Plasma and Waybar, then falls back to XEmbed on X11 desktops such as AwesomeWM. The right-click menu shows the current song, artist, playback status, and progress, with previous, play/pause, next, Start Web, and quit controls. Start Web launches `http://localhost:3000` in the current process and opens it in the default browser. The XEmbed progress bar supports click-to-seek, and long song information scrolls automatically. Left-clicking shows or hides an always-above current-lyric bubble; dragging the bubble moves it and preserves its position for the current run. Scrolling over the tray icon switches between horizontal display and top-to-bottom vertical display with upright glyphs. Scrolling up over the lyric bubble increases its font size, while scrolling down decreases it; the size is constrained to 10 through 48 and is saved for future runs. Wayland prefers a Layer Shell lyric window, falls back to a regular Wayland window, and uses a system notification only if window initialization fails. GNOME Wayland requires an AppIndicator/KStatusNotifier extension. The lyrics interface continues to work when no tray host is available.
 
-On Wayland, click the time/progress row in the tray's right-click menu to open
-a separate control panel. Drag the progress bar to preview a position and release
-to seek. Elapsed and total time sit at opposite ends of the row, with the bar
-filling the space between them. Opening or closing the panel does not hide the
-lyric bubble. Click the X in the panel's top-right corner to close it.
+On Wayland, right-clicking the tray directly opens a self-rendered menu with a
+draggable progress bar: drag to preview a position and release to seek, without
+opening a second panel. Elapsed and total time sit at opposite ends of the row,
+with the bar filling the space between them. The menu also includes previous,
+play/pause, next, Start Web, and quit. The lyric bubble remains visible.
+With Layer Shell, click outside the menu or press Esc to dismiss it; the X button
+also closes it. The tray host must support SNI ContextMenu calls (for example,
+Waybar). Non-Wayland sessions continue to use the native tray menu.
 
 Select the interface language:
 
