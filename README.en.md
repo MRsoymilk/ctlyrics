@@ -129,8 +129,9 @@ The tools invoke the host's `python3` directly without checking whether it is in
 On Linux, the tray prefers StatusNotifierItem for KDE Plasma and Waybar, then falls back to XEmbed on X11 desktops such as AwesomeWM. The right-click menu shows the current song, artist, playback status, and progress, with previous, play/pause, next, Start Web, and quit controls. Start Web launches `http://localhost:3000` in the current process and opens it in the default browser. The XEmbed progress bar supports click-to-seek, and long song information scrolls automatically. Left-clicking shows or hides an always-above current-lyric bubble; dragging the bubble moves it and preserves its position for the current run. Scrolling over the tray icon switches between horizontal display and top-to-bottom vertical display with upright glyphs. Scrolling up over the lyric bubble increases its font size, while scrolling down decreases it; the size is constrained to 10 through 48 and is saved for future runs. Wayland prefers a Layer Shell lyric window, falls back to a regular Wayland window, and uses a system notification only if window initialization fails. GNOME Wayland requires an AppIndicator/KStatusNotifier extension. The lyrics interface continues to work when no tray host is available.
 
 On Wayland and XEmbed with XShape support, hovering over the lyric bubble reveals
-a thin progress bar and compact previous, play/pause, and next icons below the
-lyrics. They collapse when the pointer leaves. Drag the bar to seek; playback
+a small single-line song title above the lyrics, with a thin progress bar and
+compact previous, play/pause, and next icons below. Long titles scroll without
+widening the window. They collapse when the pointer leaves. Drag the bar to seek; playback
 controls do not hide the lyrics. The lyric area still supports dragging and
 mouse-wheel font resizing, and its position stays fixed when controls appear.
 Wayland Layer Shell lyric bubbles can be dragged between monitors without releasing

@@ -140,7 +140,7 @@ pub(super) fn rasterize_text(font: &FontVec, text: &str) -> RasterizedText {
     rasterize_text_at_size(font, text, DEFAULT_FONT_SIZE)
 }
 
-fn rasterize_text_at_size(font: &FontVec, text: &str, font_size: u16) -> RasterizedText {
+pub(super) fn rasterize_text_at_size(font: &FontVec, text: &str, font_size: u16) -> RasterizedText {
     let scale = PxScale::from(f32::from(font_size));
     let scaled = font.as_scaled(scale);
     let mut caret = 0.0;

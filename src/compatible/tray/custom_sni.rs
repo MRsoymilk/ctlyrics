@@ -300,13 +300,13 @@ mod tests {
             events.recv_timeout(Duration::from_secs(1)).unwrap(),
             WaylandCommand::Toggle(_)
         ));
-        playback.update("Song".into(), "New lyric", "playing", 1, 180);
+        playback.update("Song".into(), "Song", "New lyric", "playing", 1, 180);
         commands.send(Command::Refresh).unwrap();
         assert!(
             matches!(events.recv_timeout(Duration::from_secs(1)).unwrap(),
             WaylandCommand::Update(lyric) if lyric == "New lyric")
         );
-        playback.update("Song".into(), "New lyric", "playing", 2, 180);
+        playback.update("Song".into(), "Song", "New lyric", "playing", 2, 180);
         commands.send(Command::Refresh).unwrap();
         // Progress changes must not resend lyrics or restart their animation.
         assert!(events.recv_timeout(Duration::from_millis(100)).is_err());

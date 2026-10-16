@@ -1,13 +1,21 @@
+use std::cell::RefCell;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use super::{
     PlaybackInfo, PlaybackSnapshot,
-    bubble::{LyricBubbleContent, LyricOrientation, render_lyric_bubble},
+    bubble::{
+        LyricBubbleContent, LyricOrientation, RasterizedText, load_font, rasterize_text_at_size,
+        render_lyric_bubble,
+    },
 };
 use crate::cmus::{PlaybackCommand, control_cmus, seek_cmus};
 
 const MIN_WIDTH: u16 = 84;
+const HEADER_HEIGHT: u16 = 18;
+const TITLE_FONT_SIZE: u16 = 12;
+const TITLE_PADDING: u16 = 8;
+const TITLE_SCROLL_GAP: usize = 32;
 const FOOTER_HEIGHT: u16 = 34;
 const BUTTON_WIDTH: u16 = 22;
 const BUTTON_HEIGHT: u16 = 18;
@@ -44,9 +52,9 @@ impl BubbleLayout {
             height,
             lyric: BubbleRect {
                 x: 0,
-                y: 0,
+                y: HEADER_HEIGHT,
                 width,
-                height: height.saturating_sub(FOOTER_HEIGHT),
+                height: height.saturating_sub(HEADER_HEIGHT + FOOTER_HEIGHT),
             },
         }
     }
@@ -54,7 +62,7 @@ impl BubbleLayout {
     fn progress(self) -> BubbleRect {
         BubbleRect {
             x: 8,
-            y: self.lyric.height + 2,
+            y: self.lyric.y + self.lyric.height + 2,
             width: self.width.saturating_sub(16),
             height: 10,
         }
@@ -69,7 +77,7 @@ impl BubbleLayout {
         };
         BubbleRect {
             x,
-            y: self.lyric.height + 12,
+            y: self.lyric.y + self.lyric.height + 12,
             width: BUTTON_WIDTH,
             height: BUTTON_HEIGHT,
         }
@@ -98,7 +106,13 @@ impl BubbleLayout {
         if expanded {
             rects.push(BubbleRect {
                 x: 0,
-                y: self.lyric.height,
+                y: 0,
+                width: self.width,
+                height: self.lyric.y,
+            });
+            rects.push(BubbleRect {
+                x: 0,
+                y: self.lyric.y + self.lyric.height,
                 width: self.width,
                 height: FOOTER_HEIGHT,
             });
@@ -134,6 +148,12 @@ struct Seek {
     line: String,
 }
 
+struct CachedTitle {
+    title: String,
+    text: Option<RasterizedText>,
+    started_at: Instant,
+}
+
 impl Seek {
     fn valid(&self, playback: &PlaybackSnapshot) -> bool {
         self.duration == playback.duration && self.line == playback.line
@@ -150,6 +170,8 @@ pub(super) struct BubbleControls {
     lyric_drag_layout: Option<BubbleLayout>,
     seek: Option<Seek>,
     preview: Option<(Seek, Instant)>,
+    title: RefCell<Option<CachedTitle>>,
+    hover_started: Instant,
 }
 
 impl BubbleControls {
@@ -164,10 +186,16 @@ impl BubbleControls {
             lyric_drag_layout: None,
             seek: None,
             preview: None,
+            title: RefCell::new(None),
+            hover_started: Instant::now(),
         }
     }
 
     pub(super) fn enter(&mut self) {
+        let now = Instant::now();
+        if !self.expanded_at(now, false) {
+            self.hover_started = now;
+        }
         self.hovered = true;
         self.leave_deadline = None;
     }
@@ -285,16 +313,21 @@ impl BubbleControls {
             orientation,
             elapsed,
             screen.0,
-            screen.1.saturating_sub(FOOTER_HEIGHT),
+            screen.1.saturating_sub(HEADER_HEIGHT + FOOTER_HEIGHT),
         );
         let width = body_width
             .max(MIN_WIDTH)
             .min(screen.0.saturating_sub(16).max(1));
-        let body_height = body_height.min(screen.1.saturating_sub(FOOTER_HEIGHT).max(1));
-        let height = body_height.saturating_add(FOOTER_HEIGHT);
+        let body_height = body_height.min(
+            screen
+                .1
+                .saturating_sub(HEADER_HEIGHT + FOOTER_HEIGHT)
+                .max(1),
+        );
+        let height = body_height.saturating_add(HEADER_HEIGHT + FOOTER_HEIGHT);
         let lyric = BubbleRect {
             x: width.saturating_sub(body_width) / 2,
-            y: 0,
+            y: HEADER_HEIGHT,
             width: body_width.min(width),
             height: body_height,
         };
@@ -310,7 +343,8 @@ impl BubbleControls {
         let mut pixels = vec![0; usize::from(width) * usize::from(height) * 4];
         for row in 0..usize::from(body_height.min(lyric.height)) {
             let source = row * usize::from(body_width) * 4;
-            let target = (row * usize::from(width) + usize::from(lyric.x)) * 4;
+            let target =
+                ((row + usize::from(lyric.y)) * usize::from(width) + usize::from(lyric.x)) * 4;
             let len = usize::from(lyric.width.min(body_width)) * 4;
             pixels[target..target + len].copy_from_slice(&body[source..source + len]);
         }
@@ -318,6 +352,7 @@ impl BubbleControls {
         let expanded = self.expanded_at(now, dragging_lyric);
         if expanded {
             let mut playback = self.playback.snapshot();
+            self.draw_title(&mut pixels, layout, &playback.title, now);
             if let Some(seek) = &self.seek {
                 if seek.valid(&playback) {
                     playback.position = seek.position;
@@ -336,6 +371,21 @@ impl BubbleControls {
             layout,
             expanded,
         }
+    }
+
+    fn draw_title(&self, pixels: &mut [u8], layout: BubbleLayout, title: &str, now: Instant) {
+        let mut cache = self.title.borrow_mut();
+        if cache.as_ref().is_none_or(|cached| cached.title != title) {
+            *cache = Some(CachedTitle {
+                title: title.to_string(),
+                text: load_font(title)
+                    .map(|font| rasterize_text_at_size(&font, title, TITLE_FONT_SIZE)),
+                started_at: now,
+            });
+        }
+        let cached = cache.as_ref().expect("title cache initialized");
+        let elapsed = now.saturating_duration_since(cached.started_at.max(self.hover_started));
+        draw_header(pixels, layout, cached.text.as_ref(), elapsed);
     }
 }
 
@@ -371,6 +421,54 @@ fn rect(x: u16, y: u16, width: u16, height: u16) -> BubbleRect {
     }
 }
 
+fn draw_header(
+    pixels: &mut [u8],
+    layout: BubbleLayout,
+    title: Option<&RasterizedText>,
+    elapsed: Duration,
+) {
+    let height = layout.lyric.y.saturating_sub(2);
+    fill(
+        pixels,
+        layout,
+        rect(0, 0, layout.width, height),
+        [10, 16, 20],
+    );
+    let Some(text) = title else {
+        return;
+    };
+    let viewport = usize::from(layout.width.saturating_sub(TITLE_PADDING * 2));
+    let overflow = text.width > viewport;
+    let cycle = text.width + TITLE_SCROLL_GAP;
+    let scroll = if overflow {
+        (elapsed.as_millis().saturating_sub(800) / 45) as usize % cycle
+    } else {
+        0
+    };
+    let left = if overflow {
+        usize::from(TITLE_PADDING)
+    } else {
+        usize::from(layout.width).saturating_sub(text.width) / 2
+    };
+    let top = usize::from(height).saturating_sub(text.height) / 2;
+    for y in 0..text.height.min(usize::from(height)) {
+        for x in 0..viewport.min(text.width) {
+            let source_x = if overflow { (scroll + x) % cycle } else { x };
+            if source_x >= text.width {
+                continue;
+            }
+            let alpha = u16::from(text.alpha[y * text.width + source_x]);
+            let target = ((top + y) * usize::from(layout.width) + left + x) * 4;
+            for (channel, color) in pixels[target..target + 3]
+                .iter_mut()
+                .zip([175_u16, 190, 184])
+            {
+                *channel = ((u16::from(*channel) * (255 - alpha) + color * alpha) / 255) as u8;
+            }
+        }
+    }
+}
+
 fn draw_footer(
     pixels: &mut [u8],
     layout: BubbleLayout,
@@ -380,7 +478,12 @@ fn draw_footer(
     fill(
         pixels,
         layout,
-        rect(0, layout.lyric.height + 2, layout.width, FOOTER_HEIGHT - 4),
+        rect(
+            0,
+            layout.lyric.y + layout.lyric.height + 2,
+            layout.width,
+            FOOTER_HEIGHT - 4,
+        ),
         [10, 16, 20],
     );
     let track = layout.progress();
@@ -473,8 +576,18 @@ mod tests {
 
     fn controls(duration: u64) -> BubbleControls {
         let playback = PlaybackInfo::new(Locale::En);
-        playback.update("Song".into(), "Lyric", "playing", 20, duration);
-        BubbleControls::new(playback)
+        playback.update("Song".into(), "Song", "Lyric", "playing", 20, duration);
+        let controls = BubbleControls::new(playback);
+        *controls.title.borrow_mut() = Some(CachedTitle {
+            title: "Song".into(),
+            text: Some(RasterizedText {
+                width: 24,
+                height: 9,
+                alpha: vec![255; 24 * 9],
+            }),
+            started_at: Instant::now(),
+        });
+        controls
     }
 
     fn frame(controls: &BubbleControls) -> BubbleFrame {
@@ -488,13 +601,17 @@ mod tests {
     }
 
     #[test]
-    fn hover_reveals_footer_without_resizing_or_moving_the_lyric() {
+    fn hover_reveals_title_and_footer_without_resizing_or_moving_the_lyric() {
         let mut controls = controls(200);
         let hidden = frame(&controls);
         assert!(!hidden.expanded);
         assert_eq!(hidden.layout.input_rects(false).len(), 1);
-        let footer_offset =
-            usize::from(hidden.layout.lyric.height) * usize::from(hidden.layout.width) * 4;
+        let lyric_offset =
+            usize::from(hidden.layout.lyric.y) * usize::from(hidden.layout.width) * 4;
+        let footer_offset = usize::from(hidden.layout.lyric.y + hidden.layout.lyric.height)
+            * usize::from(hidden.layout.width)
+            * 4;
+        assert!(hidden.pixels[..lyric_offset].iter().all(|byte| *byte == 0));
         assert!(hidden.pixels[footer_offset..].iter().all(|byte| *byte == 0));
         controls.enter();
         let shown = frame(&controls);
@@ -505,10 +622,11 @@ mod tests {
         );
         assert_eq!(hidden.layout.lyric, shown.layout.lyric);
         assert_eq!(
-            &hidden.pixels[..footer_offset],
-            &shown.pixels[..footer_offset]
+            &hidden.pixels[lyric_offset..footer_offset],
+            &shown.pixels[lyric_offset..footer_offset]
         );
-        assert_eq!(shown.layout.input_rects(true).len(), 2);
+        assert_eq!(shown.layout.input_rects(true).len(), 3);
+        assert!(shown.pixels[..lyric_offset].iter().any(|byte| *byte != 0));
         assert!(shown.pixels[footer_offset..].iter().any(|byte| *byte != 0));
     }
 
@@ -526,6 +644,90 @@ mod tests {
         assert!(frame.layout.lyric.width < frame.layout.width);
         assert!(frame.layout.lyric.x > 0);
         assert_eq!(&frame.pixels[..4], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn header_is_hoverable_only_while_expanded_and_has_no_playback_action() {
+        let mut controls = controls(200);
+        let layout = frame(&controls).layout;
+        let point = (f64::from(layout.width / 2), 8.0);
+        assert!(
+            !layout
+                .input_rects(false)
+                .iter()
+                .any(|rect| rect.contains(point))
+        );
+        assert!(
+            layout
+                .input_rects(true)
+                .iter()
+                .any(|rect| rect.contains(point))
+        );
+        controls.enter();
+        assert!(!controls.press(point, layout));
+        assert!(!controls.pressed());
+        controls.leave();
+        controls.leave_deadline = Some(Instant::now() - Duration::from_millis(1));
+        let hidden = frame(&controls);
+        assert!(!hidden.expanded);
+        let header_end = usize::from(layout.lyric.y) * usize::from(layout.width) * 4;
+        assert!(hidden.pixels[..header_end].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn title_cache_survives_lyric_updates_but_refreshes_on_track_change() {
+        let mut controls = controls(200);
+        controls.enter();
+        let started_at = Instant::now() - Duration::from_secs(2);
+        controls.title.borrow_mut().as_mut().unwrap().started_at = started_at;
+        let initial = frame(&controls);
+        controls
+            .playback
+            .update("Song".into(), "Song", "Next lyric", "paused", 21, 200);
+        let updated = frame(&controls);
+        assert_eq!(
+            controls.title.borrow().as_ref().unwrap().started_at,
+            started_at
+        );
+        let header_end =
+            usize::from(initial.layout.lyric.y) * usize::from(initial.layout.width) * 4;
+        assert_eq!(&initial.pixels[..header_end], &updated.pixels[..header_end]);
+        controls.playback.update(
+            "Other song - Artist · paused".into(),
+            "Other song",
+            "Next lyric",
+            "paused",
+            0,
+            180,
+        );
+        let changed = frame(&controls);
+        let cache = controls.title.borrow();
+        assert_eq!(cache.as_ref().unwrap().title, "Other song");
+        assert!(cache.as_ref().unwrap().started_at > started_at);
+        assert_eq!(initial.layout.lyric, changed.layout.lyric);
+    }
+
+    #[test]
+    fn long_title_scrolls_in_one_small_row_without_touching_lyrics_or_controls() {
+        let mut controls = controls(200);
+        controls.enter();
+        let layout = frame(&controls).layout;
+        let text = RasterizedText {
+            width: 300,
+            height: 9,
+            alpha: (0..300 * 9)
+                .map(|index| if index % 7 < 3 { 255 } else { 0 })
+                .collect(),
+        };
+        let mut first = vec![0; usize::from(layout.width) * usize::from(layout.height) * 4];
+        let mut scrolled = first.clone();
+        draw_header(&mut first, layout, Some(&text), Duration::ZERO);
+        draw_header(&mut scrolled, layout, Some(&text), Duration::from_secs(3));
+        let header_end = usize::from(layout.lyric.y) * usize::from(layout.width) * 4;
+        assert_ne!(&first[..header_end], &scrolled[..header_end]);
+        assert!(first[header_end..].iter().all(|byte| *byte == 0));
+        assert!(scrolled[header_end..].iter().all(|byte| *byte == 0));
+        assert!(layout.width < text.width as u16);
     }
 
     #[test]
@@ -551,7 +753,10 @@ mod tests {
         let mut controls = controls(200);
         controls.enter();
         let layout = frame(&controls).layout;
-        assert!(!controls.press((f64::from(layout.lyric.x + 8), 8.0), layout));
+        assert!(!controls.press(
+            (f64::from(layout.lyric.x + 8), f64::from(layout.lyric.y + 8)),
+            layout
+        ));
         assert!(!controls.pressed());
     }
 
@@ -642,11 +847,16 @@ mod tests {
         assert!(controls.release(point, layout).is_none());
         controls
             .playback
-            .update("Song".into(), "Lyric", "playing", 20, 200);
+            .update("Song".into(), "Song", "Lyric", "playing", 20, 200);
         controls.press(point, layout);
-        controls
-            .playback
-            .update("Other song".into(), "Other lyric", "playing", 0, 180);
+        controls.playback.update(
+            "Other song".into(),
+            "Other song",
+            "Other lyric",
+            "playing",
+            0,
+            180,
+        );
         assert!(controls.release(point, layout).is_none());
     }
 
@@ -675,6 +885,14 @@ mod tests {
         let font = super::super::bubble::load_font(text).expect("installed preview font");
         let content = LyricBubbleContent::new(&font, text, 14);
         let mut controls = controls(200);
+        controls.playback.update(
+            "小小的歌名 - 歌手 · playing".into(),
+            "小小的歌名",
+            text,
+            "playing",
+            20,
+            200,
+        );
         for expanded in [false, true] {
             if expanded {
                 controls.enter();

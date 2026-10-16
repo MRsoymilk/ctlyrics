@@ -946,7 +946,7 @@ mod tests {
     #[test]
     fn clicking_outside_dismisses_the_menu_without_seeking() {
         let playback = PlaybackInfo::new(Locale::En);
-        playback.update("Song".into(), "Lyric", "playing", 20, 200);
+        playback.update("Song".into(), "Song", "Lyric", "playing", 20, 200);
         let mut panel = ControlPanel::new(Locale::En, playback, ExitSignal::new());
         panel.handle_pointer(
             press(),
@@ -1004,7 +1004,7 @@ mod tests {
     #[test]
     fn drag_previews_without_seeking_until_release() {
         let playback = PlaybackInfo::new(Locale::En);
-        playback.update("Song".into(), "Lyric", "playing", 20, 200);
+        playback.update("Song".into(), "Song", "Lyric", "playing", 20, 200);
         let mut panel = ControlPanel::new(Locale::En, playback, ExitSignal::new());
         let start = f64::from(panel.row.track_x);
         let middle = start + f64::from(panel.row.track_width) / 2.0;
@@ -1038,11 +1038,18 @@ mod tests {
     #[test]
     fn changing_tracks_during_drag_does_not_seek_the_new_track() {
         let playback = PlaybackInfo::new(Locale::En);
-        playback.update("Song".into(), "Lyric", "playing", 20, 200);
+        playback.update("Song".into(), "Song", "Lyric", "playing", 20, 200);
         let mut panel = ControlPanel::new(Locale::En, playback.clone(), ExitSignal::new());
         let position = (f64::from(panel.row.track_x + 30), f64::from(PROGRESS_Y));
         panel.handle_pointer(press(), position);
-        playback.update("Other song".into(), "Other lyric", "playing", 0, 180);
+        playback.update(
+            "Other song".into(),
+            "Other song",
+            "Other lyric",
+            "playing",
+            0,
+            180,
+        );
         assert!(panel.handle_pointer(release(), position).is_none());
         assert!(panel.drag.is_none());
     }
@@ -1050,7 +1057,7 @@ mod tests {
     #[test]
     fn closing_cancels_an_unfinished_drag() {
         let playback = PlaybackInfo::new(Locale::En);
-        playback.update("Song".into(), "Lyric", "playing", 20, 200);
+        playback.update("Song".into(), "Song", "Lyric", "playing", 20, 200);
         let mut panel = ControlPanel::new(Locale::En, playback, ExitSignal::new());
         let position = (f64::from(panel.row.track_x + 30), f64::from(PROGRESS_Y));
         panel.handle_pointer(press(), position);

@@ -480,12 +480,12 @@ mod tests {
     fn menu_ticks_refresh_progress_without_an_open_callback() {
         let (mut tray, notifications) = test_tray();
         tray.playback
-            .update("Song".into(), "Lyric", "playing", 0, 180);
+            .update("Song".into(), "Song", "Lyric", "playing", 0, 180);
         let revision = tray.playback.snapshot().revision;
         assert!(
             !tray
                 .playback
-                .update("Song".into(), "Lyric", "playing", 60, 180)
+                .update("Song".into(), "Song", "Lyric", "playing", 60, 180)
         );
         assert_eq!(tray.playback.snapshot().revision, revision);
 
@@ -507,7 +507,7 @@ mod tests {
         tray.scroll_step = 9;
         tray.scroll_active_until.store(60_000, Ordering::Release);
         tray.playback
-            .update("Song".into(), "Lyric", "playing", 90, 240);
+            .update("Song".into(), "Song", "Lyric", "playing", 90, 240);
         tray.tick_menu(120_000);
         assert_eq!(tray.scroll_step, 9);
         assert!(matches!(&tray.menu()[1], MenuItem::Standard(item)

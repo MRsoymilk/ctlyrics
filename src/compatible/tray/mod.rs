@@ -52,6 +52,7 @@ struct PlaybackInfo(Arc<RwLock<PlaybackSnapshot>>);
 #[derive(Clone, Default)]
 struct PlaybackSnapshot {
     line: String,
+    title: String,
     lyric: String,
     status: String,
     position: u64,
@@ -63,6 +64,7 @@ impl PlaybackInfo {
     fn new(locale: Locale) -> Self {
         Self(Arc::new(RwLock::new(PlaybackSnapshot {
             line: playback_line(locale, "", "", "stopped"),
+            title: playback_title(locale, ""),
             lyric: tr(locale, "no_lyrics").to_string(),
             status: "stopped".to_string(),
             position: 0,
@@ -75,15 +77,20 @@ impl PlaybackInfo {
     fn update(
         &self,
         line: String,
+        title: &str,
         lyric: &str,
         status: &str,
         position: u64,
         duration: u64,
     ) -> bool {
         let mut snapshot = self.0.write().unwrap_or_else(|error| error.into_inner());
-        let changed = snapshot.line != line || snapshot.lyric != lyric || snapshot.status != status;
+        let changed = snapshot.line != line
+            || snapshot.title != title
+            || snapshot.lyric != lyric
+            || snapshot.status != status;
         if changed {
             snapshot.line = line;
+            snapshot.title = title.to_string();
             snapshot.lyric = lyric.to_string();
             snapshot.status = status.to_string();
             snapshot.revision = snapshot.revision.wrapping_add(1);
@@ -102,13 +109,8 @@ impl PlaybackInfo {
 }
 
 pub fn playback_line(locale: Locale, title: &str, artist: &str, status: &str) -> String {
-    let title = clean_menu_text(title);
+    let title = playback_title(locale, title);
     let artist = clean_menu_text(artist);
-    let title = if title.is_empty() {
-        tr(locale, "unknown_title").to_string()
-    } else {
-        title
-    };
     let song = if artist.is_empty() {
         title
     } else {
@@ -121,6 +123,15 @@ pub fn playback_line(locale: Locale, title: &str, artist: &str, status: &str) ->
         _ => tr(locale, "status_unknown"),
     };
     format!("{song} · {status}")
+}
+
+fn playback_title(locale: Locale, title: &str) -> String {
+    let title = clean_menu_text(title);
+    if title.is_empty() {
+        tr(locale, "unknown_title").to_string()
+    } else {
+        title
+    }
 }
 
 fn clean_menu_text(value: &str) -> String {
@@ -221,6 +232,7 @@ impl TrayService {
     ) {
         if !self.playback.update(
             playback_line(locale, title, artist, status),
+            &playback_title(locale, title),
             lyric,
             status,
             position,
@@ -245,5 +257,65 @@ impl Drop for TrayService {
                 Backend::XEmbed(tray) => tray.shutdown(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn song_title_is_a_single_line_without_artist_or_status() {
+        let playback = PlaybackInfo::new(Locale::En);
+        let title = playback_title(Locale::En, "  Song\nname · Part 2  ");
+        playback.update(
+            playback_line(Locale::En, &title, "Artist", "playing"),
+            &title,
+            "Lyric",
+            "playing",
+            10,
+            200,
+        );
+        let snapshot = playback.snapshot();
+        assert_eq!(snapshot.title, "Song name · Part 2");
+        assert_eq!(snapshot.line, "Song name · Part 2 - Artist · playing");
+        assert_eq!(playback_title(Locale::ZhCn, " \n"), "未知歌曲");
+        assert_eq!(
+            PlaybackInfo::new(Locale::En).snapshot().title,
+            "Unknown title"
+        );
+    }
+
+    #[test]
+    fn title_updates_are_detected_without_changing_progress_only_revisions() {
+        let playback = PlaybackInfo::new(Locale::En);
+        playback.update(
+            "Same menu line".into(),
+            "First title",
+            "Lyric",
+            "playing",
+            10,
+            200,
+        );
+        let before = playback.snapshot().revision;
+        assert!(playback.update(
+            "Same menu line".into(),
+            "Other title",
+            "Lyric",
+            "playing",
+            10,
+            200
+        ));
+        assert_eq!(playback.snapshot().title, "Other title");
+        assert_eq!(playback.snapshot().revision, before + 1);
+        assert!(!playback.update(
+            "Same menu line".into(),
+            "Other title",
+            "Lyric",
+            "playing",
+            11,
+            200
+        ));
+        assert_eq!(playback.snapshot().revision, before + 1);
     }
 }
