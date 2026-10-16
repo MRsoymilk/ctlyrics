@@ -207,6 +207,110 @@ struct DragState {
     displacement: (f64, f64),
 }
 
+/// All positions and sizes here are compositor logical coordinates, not physical pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OutputGeometry {
+    origin: (i32, i32),
+    size: (u16, u16),
+}
+
+impl OutputGeometry {
+    fn to_global(self, local: (i32, i32)) -> (i32, i32) {
+        (
+            self.origin.0.saturating_add(local.0),
+            self.origin.1.saturating_add(local.1),
+        )
+    }
+
+    fn to_local(self, global: (i32, i32)) -> (i32, i32) {
+        (
+            global.0.saturating_sub(self.origin.0),
+            global.1.saturating_sub(self.origin.1),
+        )
+    }
+
+    fn contains(self, point: (f64, f64)) -> bool {
+        point.0 >= f64::from(self.origin.0)
+            && point.1 >= f64::from(self.origin.1)
+            && point.0 < f64::from(self.origin.0) + f64::from(self.size.0)
+            && point.1 < f64::from(self.origin.1) + f64::from(self.size.1)
+    }
+
+    fn distance_squared(self, point: (f64, f64)) -> f64 {
+        let dx = point.0
+            - point.0.clamp(
+                f64::from(self.origin.0),
+                f64::from(self.origin.0) + f64::from(self.size.0),
+            );
+        let dy = point.1
+            - point.1.clamp(
+                f64::from(self.origin.1),
+                f64::from(self.origin.1) + f64::from(self.size.1),
+            );
+        dx * dx + dy * dy
+    }
+}
+
+#[derive(Clone, Copy)]
+struct DragBounds {
+    min: (f64, f64),
+    max: (f64, f64),
+}
+
+impl DragBounds {
+    fn for_outputs(outputs: &[OutputGeometry], bubble: (u16, u16)) -> Option<Self> {
+        let first = outputs.first()?;
+        let mut min = (f64::from(first.origin.0), f64::from(first.origin.1));
+        let mut max = min;
+        for output in outputs {
+            min.0 = min.0.min(f64::from(output.origin.0));
+            min.1 = min.1.min(f64::from(output.origin.1));
+            max.0 = max
+                .0
+                .max(f64::from(output.origin.0) + f64::from(output.size.0));
+            max.1 = max
+                .1
+                .max(f64::from(output.origin.1) + f64::from(output.size.1));
+        }
+        Some(Self {
+            min,
+            max: (
+                (max.0 - f64::from(bubble.0)).max(min.0),
+                (max.1 - f64::from(bubble.1)).max(min.1),
+            ),
+        })
+    }
+}
+
+fn drag_output(
+    outputs: &[OutputGeometry],
+    pointer: (f64, f64),
+    preferred: Option<usize>,
+) -> Option<usize> {
+    // Keep mirrored/overlapping outputs stable, but use half-open bounds at shared edges.
+    if let Some(index) = preferred.filter(|&index| {
+        outputs
+            .get(index)
+            .is_some_and(|output| output.contains(pointer))
+    }) {
+        return Some(index);
+    }
+    outputs
+        .iter()
+        .position(|output| output.contains(pointer))
+        .or_else(|| {
+            outputs
+                .iter()
+                .enumerate()
+                .min_by(|(a, left), (b, right)| {
+                    left.distance_squared(pointer)
+                        .total_cmp(&right.distance_squared(pointer))
+                        .then_with(|| (Some(*b) == preferred).cmp(&(Some(*a) == preferred)))
+                })
+                .map(|(index, _)| index)
+        })
+}
+
 impl DragState {
     fn new(grab: (f64, f64), serial: u32, origin: (i32, i32)) -> Self {
         Self {
@@ -218,12 +322,7 @@ impl DragState {
         }
     }
 
-    fn relative_motion(
-        &mut self,
-        delta: (f64, f64),
-        bubble_size: (u16, u16),
-        screen_size: (u16, u16),
-    ) -> Option<(i32, i32)> {
+    fn relative_motion(&mut self, delta: (f64, f64), bounds: DragBounds) -> Option<(i32, i32)> {
         self.displacement.0 += delta.0;
         self.displacement.1 += delta.1;
         if !self.started
@@ -232,10 +331,8 @@ impl DragState {
             return None;
         }
         self.started = true;
-        let x = (f64::from(self.origin.0) + self.displacement.0)
-            .clamp(0.0, f64::from(screen_size.0.saturating_sub(bubble_size.0)));
-        let y = (f64::from(self.origin.1) + self.displacement.1)
-            .clamp(0.0, f64::from(screen_size.1.saturating_sub(bubble_size.1)));
+        let x = (f64::from(self.origin.0) + self.displacement.0).clamp(bounds.min.0, bounds.max.0);
+        let y = (f64::from(self.origin.1) + self.displacement.1).clamp(bounds.min.1, bounds.max.1);
         // Retain fractional motion, but discard overshoot so reversing at an edge is immediate.
         self.displacement = (x - f64::from(self.origin.0), y - f64::from(self.origin.1));
         Some((x.round() as i32, y.round() as i32))
@@ -255,6 +352,9 @@ pub(super) struct State {
     buffer: Option<Buffer>,
     buffer_size: (u16, u16),
     shell: Option<ShellSurface>,
+    // Keep the initial layer mapped until button release: destroying/unmapping it
+    // during an output handoff would cancel the compositor's implicit pointer grab.
+    drag_source: Option<ShellSurface>,
     pointer: Option<wl_pointer::WlPointer>,
     relative_pointer: Option<zwp_relative_pointer_v1::ZwpRelativePointerV1>,
     pointer_seat: Option<wl_seat::WlSeat>,
@@ -314,7 +414,7 @@ fn run(
             }
         }
         event_loop.dispatch(Duration::from_millis(20), &mut state)?;
-        state.flush_layer_move(false);
+        state.flush_layer_move(false, &qh);
         if let Err(error) = state.controls.draw(&mut state.pool, &qh) {
             tracing::warn!(%error, "Wayland playback control panel failed");
             state.controls.close();
@@ -378,6 +478,7 @@ fn initialize(
         buffer: None,
         buffer_size: (0, 0),
         shell: None,
+        drag_source: None,
         pointer: None,
         relative_pointer: None,
         pointer_seat: None,
@@ -499,6 +600,14 @@ impl State {
         if self.shell.is_some() {
             return;
         }
+        if self.layer_shell.is_some()
+            && let Some(geometry) = self
+                .active_output
+                .as_ref()
+                .and_then(|output| self.output_geometry(output))
+        {
+            self.screen_size = geometry.size;
+        }
         let surface = self.compositor.create_surface(qh);
         self.bubble_layout = self
             .rendered()
@@ -517,9 +626,14 @@ impl State {
                 surface,
                 Layer::Top,
                 Some("ctlyrics-lyric"),
-                None,
+                self.active_output.as_ref(),
             );
-            let (x, y) = self.position.unwrap_or((DEFAULT_MARGIN, DEFAULT_MARGIN));
+            let (x, y) = clamp_position(
+                self.position.unwrap_or((DEFAULT_MARGIN, DEFAULT_MARGIN)),
+                self.bubble_size,
+                self.screen_size,
+            );
+            self.position = Some((x, y));
             layer.set_anchor(Anchor::TOP | Anchor::LEFT);
             layer.set_keyboard_interactivity(KeyboardInteractivity::None);
             layer.set_exclusive_zone(-1);
@@ -544,6 +658,7 @@ impl State {
 
     fn hide(&mut self) {
         self.shell = None;
+        self.drag_source = None;
         self.buffer = None;
         self.buffer_size = (0, 0);
         self.drag = None;
@@ -568,10 +683,7 @@ impl State {
         self.bubble_size = (width, height);
         if let ShellSurface::Layer(layer) = shell {
             let position = clamp_position(
-                self.pending_layer_position
-                    .take()
-                    .or(self.position)
-                    .unwrap_or((DEFAULT_MARGIN, DEFAULT_MARGIN)),
+                self.position.unwrap_or((DEFAULT_MARGIN, DEFAULT_MARGIN)),
                 (width, height),
                 self.screen_size,
             );
@@ -660,21 +772,123 @@ impl State {
         Ok(())
     }
 
-    fn flush_layer_move(&mut self, force: bool) {
+    fn output_geometry(&self, output: &wl_output::WlOutput) -> Option<OutputGeometry> {
+        let info = self.output_state.info(output)?;
+        let origin = info.logical_position?;
+        let (width, height) = info.logical_size?;
+        let size = (u16::try_from(width).ok()?, u16::try_from(height).ok()?);
+        (size.0 > 0 && size.1 > 0).then_some(OutputGeometry { origin, size })
+    }
+
+    fn current_geometry(&self) -> OutputGeometry {
+        self.active_output
+            .as_ref()
+            .and_then(|output| self.output_geometry(output))
+            .unwrap_or(OutputGeometry {
+                origin: (0, 0),
+                size: self.screen_size,
+            })
+    }
+
+    fn output_geometries(&self) -> Vec<(wl_output::WlOutput, OutputGeometry)> {
+        self.output_state
+            .outputs()
+            .filter_map(|output| {
+                self.output_geometry(&output)
+                    .map(|geometry| (output, geometry))
+            })
+            .collect()
+    }
+
+    fn switch_layer_output(
+        &mut self,
+        output: wl_output::WlOutput,
+        geometry: OutputGeometry,
+        position: (i32, i32),
+        qh: &QueueHandle<Self>,
+    ) -> Result<()> {
+        if self.drag.is_some() && self.drag_source.is_none() {
+            if let Some(shell) = &self.shell {
+                // Keep a transparent, mapped source surface for the ongoing implicit grab.
+                // Attaching a null buffer here would unmap it and lose motion/release events.
+                let (width, height) = self.bubble_size;
+                let (buffer, canvas) = self.pool.create_buffer(
+                    i32::from(width),
+                    i32::from(height),
+                    i32::from(width) * 4,
+                    wl_shm::Format::Argb8888,
+                )?;
+                canvas.fill(0);
+                let surface = shell.wl_surface();
+                let region = Region::new(&self.compositor)?;
+                surface.set_input_region(Some(region.wl_region()));
+                buffer.attach_to(surface)?;
+                surface.damage_buffer(0, 0, i32::from(width), i32::from(height));
+                surface.commit();
+            }
+            self.drag_source = self.shell.take();
+        } else {
+            self.shell = None;
+        }
+        self.active_output = Some(output);
+        self.screen_size = geometry.size;
+        self.position = Some(clamp_position(
+            geometry.to_local(position),
+            self.bubble_size,
+            geometry.size,
+        ));
+        self.create_surface(qh);
+        self.dirty = true;
+        Ok(())
+    }
+
+    fn flush_layer_move(&mut self, force: bool, qh: &QueueHandle<Self>) {
         if !force && self.last_move.elapsed() < DRAG_FRAME_INTERVAL {
             return;
         }
         let Some(position) = self.pending_layer_position.take() else {
             return;
         };
-        let Some(ShellSurface::Layer(layer)) = &self.shell else {
+        if !matches!(self.shell, Some(ShellSurface::Layer(_))) {
             return;
+        }
+        let outputs = self.output_geometries();
+        let geometries: Vec<_> = outputs.iter().map(|(_, geometry)| *geometry).collect();
+        let grab = self
+            .drag
+            .as_ref()
+            .map(|drag| drag.grab)
+            .unwrap_or((0.0, 0.0));
+        let pointer = (
+            f64::from(position.0) + grab.0,
+            f64::from(position.1) + grab.1,
+        );
+        let preferred = outputs
+            .iter()
+            .position(|(output, _)| Some(output) == self.active_output.as_ref());
+        let geometry = if let Some(index) = drag_output(&geometries, pointer, preferred) {
+            let (output, geometry) = &outputs[index];
+            if self.active_output.as_ref() != Some(output) {
+                if let Err(error) =
+                    self.switch_layer_output(output.clone(), *geometry, position, qh)
+                {
+                    tracing::warn!(%error, "failed to move lyric bubble to another output");
+                }
+                self.last_move = Instant::now();
+                return;
+            }
+            *geometry
+        } else {
+            self.current_geometry()
         };
-        let position = clamp_position(position, self.bubble_size, self.screen_size);
+        let position = clamp_position(geometry.to_local(position), self.bubble_size, geometry.size);
         if self.position == Some(position) {
             return;
         }
         self.position = Some(position);
+        let Some(ShellSurface::Layer(layer)) = &self.shell else {
+            return;
+        };
         layer.set_margin(position.1, 0, 0, position.0);
         layer.commit();
         self.last_move = Instant::now();
@@ -802,6 +1016,7 @@ impl CompositorHandler for State {
             .as_ref()
             .is_some_and(|shell| shell.wl_surface() == surface)
             && self.active_output.as_ref() == Some(output)
+            && matches!(self.shell, Some(ShellSurface::Xdg(_)))
         {
             self.active_output = None;
         }
@@ -835,11 +1050,24 @@ impl OutputHandler for State {
     fn output_destroyed(
         &mut self,
         _connection: &Connection,
-        _qh: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
+        // A removed output may own the hidden grab source as well as the visible surface.
+        self.drag = None;
+        self.drag_source = None;
+        self.pending_layer_position = None;
+        self.bubble_controls.cancel();
+        self.dirty = true;
         if self.active_output.as_ref() == Some(&output) {
             self.active_output = None;
+            if matches!(self.shell, Some(ShellSurface::Layer(_))) {
+                self.shell = None;
+                self.configured = false;
+                if self.visible {
+                    self.create_surface(qh);
+                }
+            }
         }
     }
 }
@@ -907,6 +1135,7 @@ impl SeatHandler for State {
             }
             self.pointer_seat = None;
             self.drag = None;
+            self.drag_source = None;
             self.pending_layer_position = None;
             self.controls.cancel_drag();
             self.bubble_controls.cancel();
@@ -936,6 +1165,7 @@ impl SeatHandler for State {
             }
             self.pointer_seat = None;
             self.drag = None;
+            self.drag_source = None;
             self.pending_layer_position = None;
             self.controls.cancel_drag();
             self.bubble_controls.cancel();
@@ -947,7 +1177,7 @@ impl PointerHandler for State {
     fn pointer_frame(
         &mut self,
         _connection: &Connection,
-        _qh: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         _pointer: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
@@ -956,10 +1186,15 @@ impl PointerHandler for State {
                 self.controls.pointer_event(event);
                 continue;
             }
-            if self
-                .shell
+            let on_drag_source = self
+                .drag_source
                 .as_ref()
-                .is_none_or(|shell| &event.surface != shell.wl_surface())
+                .is_some_and(|shell| &event.surface == shell.wl_surface());
+            if !on_drag_source
+                && self
+                    .shell
+                    .as_ref()
+                    .is_none_or(|shell| &event.surface != shell.wl_surface())
             {
                 continue;
             }
@@ -985,15 +1220,16 @@ impl PointerHandler for State {
                         continue;
                     }
                     self.bubble_controls.start_lyric_drag(self.bubble_layout);
-                    self.drag = Some(DragState::new(
-                        event.position,
-                        serial,
-                        self.position.unwrap_or((DEFAULT_MARGIN, DEFAULT_MARGIN)),
-                    ));
+                    let origin = self
+                        .current_geometry()
+                        .to_global(self.position.unwrap_or((DEFAULT_MARGIN, DEFAULT_MARGIN)));
+                    self.drag = Some(DragState::new(event.position, serial, origin));
                 }
                 PointerEventKind::Motion { .. } => {
-                    self.bubble_controls
-                        .motion(event.position, self.bubble_layout);
+                    if !on_drag_source {
+                        self.bubble_controls
+                            .motion(event.position, self.bubble_layout);
+                    }
                     self.dirty = true;
                     if self.bubble_controls.pressed() {
                         continue;
@@ -1038,9 +1274,14 @@ impl PointerHandler for State {
                         self.dirty = true;
                         continue;
                     }
-                    self.flush_layer_move(true);
+                    self.flush_layer_move(true, qh);
                     self.bubble_controls.finish_lyric_drag();
                     let clicked = self.drag.take().is_some_and(|drag| !drag.started);
+                    if self.drag_source.is_some() {
+                        self.bubble_controls.leave();
+                    }
+                    self.drag_source = None;
+                    self.dirty = true;
                     if clicked {
                         self.hide();
                     }
@@ -1104,12 +1345,21 @@ impl RelativePointerHandler for State {
         if self.relative_pointer.as_ref() != Some(relative_pointer)
             || self.pointer.as_ref() != Some(pointer)
             || !matches!(self.shell, Some(ShellSurface::Layer(_)))
+            || self.drag.is_none()
         {
             return;
         }
-        if let Some(drag) = self.drag.as_mut()
-            && let Some(position) =
-                drag.relative_motion(event.delta, self.bubble_size, self.screen_size)
+        let mut geometries: Vec<_> = self
+            .output_geometries()
+            .into_iter()
+            .map(|(_, geometry)| geometry)
+            .collect();
+        if geometries.is_empty() {
+            geometries.push(self.current_geometry());
+        }
+        if let Some(bounds) = DragBounds::for_outputs(&geometries, self.bubble_size)
+            && let Some(drag) = self.drag.as_mut()
+            && let Some(position) = drag.relative_motion(event.delta, bounds)
         {
             self.pending_layer_position = Some(position);
         }
@@ -1122,9 +1372,18 @@ impl LayerShellHandler for State {
             self.controls.close();
             return;
         }
+        if matches!(&self.drag_source, Some(ShellSurface::Layer(current)) if current == layer) {
+            self.drag_source = None;
+            self.drag = None;
+            self.pending_layer_position = None;
+            self.bubble_controls.cancel();
+            self.dirty = true;
+            return;
+        }
         if matches!(&self.shell, Some(ShellSurface::Layer(current)) if current == layer) {
             self.shell = None;
             self.drag = None;
+            self.drag_source = None;
             self.pending_layer_position = None;
             self.bubble_controls.cancel();
             self.layer_shell = None;
@@ -1220,62 +1479,52 @@ delegate_xdg_window!(State);
 mod tests {
     use super::*;
 
+    fn bounds(bubble: (u16, u16), screen: (u16, u16)) -> DragBounds {
+        DragBounds::for_outputs(
+            &[OutputGeometry {
+                origin: (0, 0),
+                size: screen,
+            }],
+            bubble,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn relative_drag_accumulates_motion_without_waiting_for_window_updates() {
         let mut drag = DragState::new((20.0, 10.0), 1, (100, 100));
         let size = (100, 80);
-        let screen = (1920, 1080);
+        let bounds = bounds(size, (1920, 1080));
 
         // The compositor may not have applied any window move yet. Each physical delta
         // must still be added exactly once, independently of surface-local coordinates.
-        assert_eq!(
-            drag.relative_motion((10.0, 5.0), size, screen),
-            Some((110, 105))
-        );
-        assert_eq!(
-            drag.relative_motion((10.0, 5.0), size, screen),
-            Some((120, 110))
-        );
-        assert_eq!(
-            drag.relative_motion((0.0, 0.0), size, screen),
-            Some((120, 110))
-        );
-        assert_eq!(
-            drag.relative_motion((-5.0, -5.0), size, screen),
-            Some((115, 105))
-        );
+        assert_eq!(drag.relative_motion((10.0, 5.0), bounds), Some((110, 105)));
+        assert_eq!(drag.relative_motion((10.0, 5.0), bounds), Some((120, 110)));
+        assert_eq!(drag.relative_motion((0.0, 0.0), bounds), Some((120, 110)));
+        assert_eq!(drag.relative_motion((-5.0, -5.0), bounds), Some((115, 105)));
     }
 
     #[test]
     fn relative_drag_preserves_fractional_motion() {
         let mut drag = DragState::new((0.0, 0.0), 1, (100, 100));
         let size = (100, 80);
-        let screen = (1920, 1080);
-        assert_eq!(
-            drag.relative_motion((4.0, 0.0), size, screen),
-            Some((104, 100))
-        );
+        let bounds = bounds(size, (1920, 1080));
+        assert_eq!(drag.relative_motion((4.0, 0.0), bounds), Some((104, 100)));
         for _ in 0..4 {
-            drag.relative_motion((0.25, 0.25), size, screen);
+            drag.relative_motion((0.25, 0.25), bounds);
         }
-        assert_eq!(
-            drag.relative_motion((0.0, 0.0), size, screen),
-            Some((105, 101))
-        );
+        assert_eq!(drag.relative_motion((0.0, 0.0), bounds), Some((105, 101)));
     }
 
     #[test]
     fn relative_drag_keeps_small_movements_as_clicks() {
         let mut drag = DragState::new((20.0, 10.0), 1, (100, 100));
         let size = (100, 80);
-        let screen = (1920, 1080);
-        assert_eq!(drag.relative_motion((1.5, 0.0), size, screen), None);
-        assert_eq!(drag.relative_motion((1.5, 0.0), size, screen), None);
+        let bounds = bounds(size, (1920, 1080));
+        assert_eq!(drag.relative_motion((1.5, 0.0), bounds), None);
+        assert_eq!(drag.relative_motion((1.5, 0.0), bounds), None);
         assert!(!drag.started);
-        assert_eq!(
-            drag.relative_motion((1.0, 0.0), size, screen),
-            Some((104, 100))
-        );
+        assert_eq!(drag.relative_motion((1.0, 0.0), bounds), Some((104, 100)));
         assert!(drag.started);
     }
 
@@ -1283,20 +1532,14 @@ mod tests {
     fn relative_drag_can_reverse_immediately_at_screen_edges() {
         let mut drag = DragState::new((0.0, 0.0), 1, (10, 10));
         let size = (100, 80);
-        let screen = (800, 600);
+        let bounds = bounds(size, (800, 600));
+        assert_eq!(drag.relative_motion((-100.0, -100.0), bounds), Some((0, 0)));
+        assert_eq!(drag.relative_motion((1.0, 1.0), bounds), Some((1, 1)));
         assert_eq!(
-            drag.relative_motion((-100.0, -100.0), size, screen),
-            Some((0, 0))
-        );
-        assert_eq!(drag.relative_motion((1.0, 1.0), size, screen), Some((1, 1)));
-        assert_eq!(
-            drag.relative_motion((1000.0, 1000.0), size, screen),
+            drag.relative_motion((1000.0, 1000.0), bounds),
             Some((700, 520))
         );
-        assert_eq!(
-            drag.relative_motion((-1.0, -1.0), size, screen),
-            Some((699, 519))
-        );
+        assert_eq!(drag.relative_motion((-1.0, -1.0), bounds), Some((699, 519)));
     }
 
     #[test]
@@ -1305,5 +1548,223 @@ mod tests {
             clamp_position((-20, 2000), (100, 80), (1920, 1080)),
             (0, 1000)
         );
+    }
+
+    #[test]
+    fn drag_crosses_right_output_and_converts_to_local_margins() {
+        let outputs = [
+            OutputGeometry {
+                origin: (0, 0),
+                size: (1920, 1080),
+            },
+            OutputGeometry {
+                origin: (1920, 0),
+                size: (1280, 720),
+            },
+        ];
+        let mut drag = DragState::new((20.0, 10.0), 1, (1800, 100));
+        let bounds = DragBounds::for_outputs(&outputs, (100, 80)).unwrap();
+        let position = drag.relative_motion((200.0, 5.0), bounds).unwrap();
+        assert_eq!(position, (2000, 105));
+        assert_eq!(drag_output(&outputs, (2020.0, 115.0), Some(0)), Some(1));
+        assert_eq!(outputs[1].to_local(position), (80, 105));
+        // Handoffs must not reset displacement or replace global coordinates with local margins.
+        assert_eq!(drag.relative_motion((10.0, 0.0), bounds), Some((2010, 105)));
+        let back = drag.relative_motion((-200.0, 0.0), bounds).unwrap();
+        assert_eq!(back, (1810, 105));
+        assert_eq!(drag_output(&outputs, (1830.0, 115.0), Some(1)), Some(0));
+    }
+
+    #[test]
+    fn drag_crosses_outputs_left_and_above_the_primary() {
+        let outputs = [
+            OutputGeometry {
+                origin: (0, 0),
+                size: (1920, 1080),
+            },
+            OutputGeometry {
+                origin: (-1280, 0),
+                size: (1280, 720),
+            },
+            OutputGeometry {
+                origin: (0, -900),
+                size: (1600, 900),
+            },
+        ];
+        let bounds = DragBounds::for_outputs(&outputs, (100, 80)).unwrap();
+        let mut drag = DragState::new((20.0, 10.0), 1, (100, 100));
+        let left = drag.relative_motion((-400.0, 0.0), bounds).unwrap();
+        assert_eq!(left, (-300, 100));
+        assert_eq!(drag_output(&outputs, (-280.0, 110.0), Some(0)), Some(1));
+        assert_eq!(outputs[1].to_local(left), (980, 100));
+        let above = drag.relative_motion((400.0, -400.0), bounds).unwrap();
+        assert_eq!(above, (100, -300));
+        assert_eq!(drag_output(&outputs, (120.0, -290.0), Some(1)), Some(2));
+        assert_eq!(outputs[2].to_local(above), (100, 600));
+    }
+
+    #[test]
+    fn handoff_follows_the_grab_point_not_the_bubble_left_edge() {
+        let outputs = [
+            OutputGeometry {
+                origin: (0, 0),
+                size: (800, 600),
+            },
+            OutputGeometry {
+                origin: (800, 0),
+                size: (800, 600),
+            },
+        ];
+        let grab = (90.0, 10.0);
+        let mut drag = DragState::new(grab, 1, (690, 100));
+        let bounds = DragBounds::for_outputs(&outputs, (100, 80)).unwrap();
+        let position = drag.relative_motion((20.0, 0.0), bounds).unwrap();
+        let pointer = (
+            f64::from(position.0) + grab.0,
+            f64::from(position.1) + grab.1,
+        );
+        assert_eq!(pointer.0, 800.0);
+        assert_eq!(drag_output(&outputs, pointer, Some(0)), Some(1));
+        assert_eq!(
+            clamp_position(outputs[1].to_local(position), (100, 80), outputs[1].size),
+            (0, 100)
+        );
+        // Clamping the displayed bubble at an output edge must not consume pointer movement.
+        assert_eq!(drag.relative_motion((100.0, 0.0), bounds), Some((810, 100)));
+    }
+
+    #[test]
+    fn offset_and_scaled_outputs_use_logical_geometry() {
+        let outputs = [
+            OutputGeometry {
+                origin: (0, 0),
+                size: (1920, 1080),
+            },
+            // A 3840x2160 display at 2x scale, positioned below and offset to the left.
+            OutputGeometry {
+                origin: (-400, 1080),
+                size: (1920, 1080),
+            },
+        ];
+        let global = (-200, 1200);
+        assert_eq!(drag_output(&outputs, (-180.0, 1210.0), Some(0)), Some(1));
+        let local = outputs[1].to_local(global);
+        assert_eq!(local, (200, 120));
+        assert_eq!(outputs[1].to_global(local), global);
+        assert_eq!(drag_output(&outputs, (100.0, 1080.0), Some(0)), Some(1));
+    }
+
+    #[test]
+    fn gaps_choose_the_nearest_real_output_instead_of_an_invisible_area() {
+        let outputs = [
+            OutputGeometry {
+                origin: (0, 0),
+                size: (800, 600),
+            },
+            OutputGeometry {
+                origin: (1000, 300),
+                size: (800, 600),
+            },
+        ];
+        assert_eq!(drag_output(&outputs, (850.0, 400.0), Some(0)), Some(0));
+        assert_eq!(drag_output(&outputs, (950.0, 400.0), Some(0)), Some(1));
+        assert_eq!(drag_output(&outputs, (900.0, 400.0), Some(1)), Some(1));
+        let local = outputs[1].to_local((930, 390));
+        assert_eq!(clamp_position(local, (100, 80), outputs[1].size), (0, 90));
+    }
+
+    #[test]
+    fn overlapping_outputs_keep_the_current_output_stable() {
+        let output = OutputGeometry {
+            origin: (0, 0),
+            size: (800, 600),
+        };
+        assert_eq!(
+            drag_output(&[output, output], (200.0, 100.0), Some(1)),
+            Some(1)
+        );
+        assert_eq!(
+            drag_output(&[output, output], (200.0, 100.0), Some(0)),
+            Some(0)
+        );
+        assert_eq!(drag_output(&[], (200.0, 100.0), None), None);
+        assert!(DragBounds::for_outputs(&[], (100, 80)).is_none());
+    }
+
+    #[test]
+    fn outer_desktop_edge_discards_overshoot_in_negative_coordinates() {
+        let outputs = [OutputGeometry {
+            origin: (-1280, -720),
+            size: (1280, 720),
+        }];
+        let bounds = DragBounds::for_outputs(&outputs, (100, 80)).unwrap();
+        let mut drag = DragState::new((10.0, 10.0), 1, (-1000, -500));
+        assert_eq!(
+            drag.relative_motion((-1000.0, -1000.0), bounds),
+            Some((-1280, -720))
+        );
+        assert_eq!(
+            drag.relative_motion((1.0, 1.0), bounds),
+            Some((-1279, -719))
+        );
+        assert_eq!(
+            drag.relative_motion((2000.0, 2000.0), bounds),
+            Some((-100, -80))
+        );
+        assert_eq!(
+            drag.relative_motion((-1.0, -1.0), bounds),
+            Some((-101, -81))
+        );
+    }
+
+    #[test]
+    fn another_drag_after_handoff_starts_in_global_coordinates() {
+        let output = OutputGeometry {
+            origin: (-1280, 720),
+            size: (1280, 720),
+        };
+        let bounds = DragBounds::for_outputs(&[output], (100, 80)).unwrap();
+        let mut drag = DragState::new((20.0, 10.0), 2, output.to_global((500, 200)));
+        let position = drag.relative_motion((15.0, 10.0), bounds).unwrap();
+        assert_eq!(output.to_local(position), (515, 210));
+    }
+
+    #[test]
+    fn continuous_drag_visits_all_three_outputs_in_an_l_shaped_layout() {
+        let outputs = [
+            OutputGeometry {
+                origin: (0, 0),
+                size: (1920, 1080),
+            },
+            OutputGeometry {
+                origin: (-1920, 0),
+                size: (1920, 1080),
+            },
+            OutputGeometry {
+                origin: (-1920, 1080),
+                size: (1920, 1080),
+            },
+        ];
+        let bounds = DragBounds::for_outputs(&outputs, (100, 80)).unwrap();
+        let mut drag = DragState::new((20.0, 10.0), 1, (100, 200));
+        let mut current = Some(0);
+        for (delta, target, local) in [
+            ((-400.0, 0.0), 1, (1620, 200)),
+            ((0.0, 1000.0), 2, (1620, 120)),
+            ((0.0, -1000.0), 1, (1620, 200)),
+            ((400.0, 0.0), 0, (100, 200)),
+        ] {
+            let position = drag.relative_motion(delta, bounds).unwrap();
+            current = drag_output(
+                &outputs,
+                (
+                    f64::from(position.0) + drag.grab.0,
+                    f64::from(position.1) + drag.grab.1,
+                ),
+                current,
+            );
+            assert_eq!(current, Some(target));
+            assert_eq!(outputs[target].to_local(position), local);
+        }
     }
 }

@@ -133,6 +133,9 @@ a thin progress bar and compact previous, play/pause, and next icons below the
 lyrics. They collapse when the pointer leaves. Drag the bar to seek; playback
 controls do not hide the lyrics. The lyric area still supports dragging and
 mouse-wheel font resizing, and its position stays fixed when controls appear.
+Wayland Layer Shell lyric bubbles can be dragged between monitors without releasing
+the mouse button and retain their destination output and position. Cross-monitor
+placement uses logical coordinates, including negative origins and mixed-scale layouts.
 
 On Wayland, right-clicking the tray directly opens a self-rendered menu with a
 draggable progress bar: drag to preview a position and release to seek, without
